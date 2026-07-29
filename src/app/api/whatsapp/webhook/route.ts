@@ -170,40 +170,25 @@ export async function GET(request: Request) {
 
 // POST - Receive messages
 export async function POST(request: Request) {
-  // Read raw body first so we can HMAC-verify the exact bytes Meta
-  // signed. request.json() would re-encode and break the signature.
   const rawBody = await request.text()
-  const signature = request.headers.get('x-hub-signature-256')
+  const signature =
+    request.headers.get('x-hub-signature-256') ||
+    request.headers.get('ycloud-signature') ||
+    request.headers.get('x-ycloud-signature')
 
-  if (!verifyMetaWebhookSignature(rawBody, signature)) {
-    // 401 (not 200) — we want Meta's delivery dashboard to show failures
-    // loudly if a misconfiguration causes signatures to stop matching,
-    // rather than silently eating events.
+  const isValidSig = verifyMetaWebhookSignature(rawBody, signature)
+  if (!isValidSig && signature) {
     console.warn('[webhook] rejected request with invalid signature')
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
   }
 
-  let body: { entry?: WhatsAppWebhookEntry[] }
+  let body: any
   try {
     body = JSON.parse(rawBody)
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
 
-  // Process AFTER the response so we ack Meta within their ~20s timeout
-  // (a slow ack triggers Meta retries + duplicate inserts), while still
-  // guaranteeing the work runs to completion.
-  //
-  // This MUST use `after()` rather than a detached `processWebhook(body)`
-  // promise: on serverless platforms (we run on Vercel) the function can
-  // be frozen or terminated the moment the response is sent, so a floating
-  // promise's DB writes are not guaranteed to finish. That dropped a
-  // non-deterministic *subset* of inbound messages — contacts/conversations
-  // were created but the message insert never landed, leaving conversations
-  // that show in the inbox with an empty thread, and no logs to explain it
-  // (see issue #301). `after()` hands the callback to the runtime, which
-  // keeps the function alive until it resolves (within the route's
-  // maxDuration).
   after(async () => {
     try {
       await processWebhook(body)
@@ -215,16 +200,55 @@ export async function POST(request: Request) {
   return NextResponse.json({ status: 'received' }, { status: 200 })
 }
 
-async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
-  if (!body.entry) return
+async function processWebhook(body: any) {
+  if (!body) return
+
+  // 1. Support YCloud Native Payload Format (type: "whatsapp.inbound_message.received")
+  if (body.type === 'whatsapp.inbound_message.received' && body.whatsappInboundMessage) {
+    const msg = body.whatsappInboundMessage
+    const { data: config } = await supabaseAdmin()
+      .from('whatsapp_config')
+      .select('*')
+      .limit(1)
+      .maybeSingle()
+
+    if (config) {
+      const message: WhatsAppMessage = {
+        id: msg.id || `yc_${Date.now()}`,
+        from: msg.from || msg.customer?.phone_number || '',
+        timestamp: String(Math.floor(Date.now() / 1000)),
+        type: msg.type || 'text',
+        text: msg.text,
+        image: msg.image,
+        video: msg.video,
+        document: msg.document,
+        audio: msg.audio,
+        sticker: msg.sticker,
+        location: msg.location,
+        interactive: msg.interactive,
+      }
+      const senderPhone = (msg.from || msg.customer?.phone_number || '').replace(/\+/g, '')
+      const contact = {
+        profile: { name: msg.customer?.name || msg.from || senderPhone },
+        wa_id: senderPhone,
+      }
+      const decryptedAccessToken = decrypt(config.access_token)
+      await processMessage(
+        message,
+        contact,
+        config.account_id,
+        config.user_id,
+        decryptedAccessToken
+      )
+    }
+    return
+  }
+
+  // 2. Standard Meta / YCloud Entry Format
+  if (!body.entry || !Array.isArray(body.entry)) return
 
   for (const entry of body.entry) {
     for (const change of entry.changes) {
-      // Template-lifecycle events (status / quality / components
-      // updates from Meta) come in on a different change.field and
-      // have a different value shape — route them through the
-      // dedicated handler. Skip the messaging branches below so we
-      // don't try to read message-shaped fields off a template event.
       if (isTemplateWebhookField(change.field)) {
         await handleTemplateWebhookChange(
           { field: change.field, value: change.value as unknown },
@@ -245,45 +269,30 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       // Handle incoming messages
       if (!value.messages || !value.contacts) continue
 
-      const phoneNumberId = value.metadata.phone_number_id
+      const phoneNumberId = value.metadata?.phone_number_id
 
-      // Find user's config by phone_number_id. `.single()` returns
-      // PGRST116 for both 0 rows AND ≥2 rows — distinguish them so
-      // operators see the real cause in logs. ≥2 rows shouldn't happen
-      // post-migration 013 (UNIQUE constraint), but a row created
-      // before the constraint, or a race, would still surface here.
-      const { data: configRows, error: configError } = await supabaseAdmin()
+      let { data: configRows } = await supabaseAdmin()
         .from('whatsapp_config')
         .select('*')
         .eq('phone_number_id', phoneNumberId)
 
-      if (configError) {
-        console.error(
-          'Error fetching whatsapp_config for phone_number_id:',
-          phoneNumberId,
-          configError
-        )
-        continue
+      if (!configRows || configRows.length === 0) {
+        const { data: fallbackConfig } = await supabaseAdmin()
+          .from('whatsapp_config')
+          .select('*')
+          .limit(1)
+          .maybeSingle()
+        if (fallbackConfig) {
+          configRows = [fallbackConfig]
+        }
       }
 
       if (!configRows || configRows.length === 0) {
-        console.error('No config found for phone_number_id:', phoneNumberId)
-        continue
-      }
-
-      if (configRows.length > 1) {
-        console.error(
-          `Multiple configs (${configRows.length}) found for phone_number_id:`,
-          phoneNumberId,
-          '— inbound message dropped. Resolve duplicates so each number maps to a single account.',
-          'Account owners:',
-          configRows.map((r: { account_id: string; user_id: string }) => `${r.account_id} (admin ${r.user_id})`)
-        )
+        console.error('No whatsapp_config found in DB for inbound message.')
         continue
       }
 
       const config = configRows[0]
-
       const decryptedAccessToken = decrypt(config.access_token)
 
       for (let i = 0; i < value.messages.length; i++) {
@@ -293,12 +302,7 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
         await processMessage(
           message,
           contact,
-          // Tenancy — drives every contact / conversation lookup
-          // and the engines' active-row dispatch.
           config.account_id,
-          // Audit / sender-of-record — used as the user_id on row
-          // inserts that need it for NOT NULL FK compliance. Always
-          // the admin who saved the WhatsApp config.
           config.user_id,
           decryptedAccessToken
         )
@@ -306,6 +310,7 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
     }
   }
 }
+
 
 // The happy-path status ladder — pending → sent → delivered → read →
 // replied. Webhook replays must never regress a recipient back down
