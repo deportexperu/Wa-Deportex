@@ -200,12 +200,27 @@ export async function POST(request: Request) {
   return NextResponse.json({ status: 'received' }, { status: 200 })
 }
 
+function safeIsoTimestamp(ts: any): string {
+  if (!ts) return new Date().toISOString()
+  if (typeof ts === 'string' && (ts.includes('T') || ts.includes('-'))) {
+    const d = new Date(ts)
+    if (!isNaN(d.getTime())) return d.toISOString()
+  }
+  const num = Number(ts)
+  if (!isNaN(num) && num > 0) {
+    const ms = num < 10000000000 ? num * 1000 : num
+    const d = new Date(ms)
+    if (!isNaN(d.getTime())) return d.toISOString()
+  }
+  return new Date().toISOString()
+}
+
 async function processWebhook(body: any) {
   if (!body) return
 
-  // 1. Support YCloud Native Payload Format (type: "whatsapp.inbound_message.received")
-  if (body.type === 'whatsapp.inbound_message.received' && body.whatsappInboundMessage) {
-    const msg = body.whatsappInboundMessage
+  // 1. Support YCloud Native Payload Format
+  const ycloudMsg = body.whatsappInboundMessage || body.whatsappMessage || body.message || body.data
+  if (ycloudMsg && (body.type?.includes('message') || body.type?.includes('inbound') || ycloudMsg.from)) {
     const { data: config } = await supabaseAdmin()
       .from('whatsapp_config')
       .select('*')
@@ -213,23 +228,24 @@ async function processWebhook(body: any) {
       .maybeSingle()
 
     if (config) {
+      const fromPhone = ycloudMsg.from || ycloudMsg.customer?.phone_number || ycloudMsg.sender || ''
       const message: WhatsAppMessage = {
-        id: msg.id || `yc_${Date.now()}`,
-        from: msg.from || msg.customer?.phone_number || '',
-        timestamp: String(Math.floor(Date.now() / 1000)),
-        type: msg.type || 'text',
-        text: msg.text,
-        image: msg.image,
-        video: msg.video,
-        document: msg.document,
-        audio: msg.audio,
-        sticker: msg.sticker,
-        location: msg.location,
-        interactive: msg.interactive,
+        id: ycloudMsg.id || `yc_${Date.now()}`,
+        from: fromPhone,
+        timestamp: ycloudMsg.sendTime || ycloudMsg.timestamp || ycloudMsg.createTime || String(Math.floor(Date.now() / 1000)),
+        type: ycloudMsg.type || 'text',
+        text: typeof ycloudMsg.text === 'string' ? { body: ycloudMsg.text } : (ycloudMsg.text || { body: ycloudMsg.body || '' }),
+        image: ycloudMsg.image,
+        video: ycloudMsg.video,
+        document: ycloudMsg.document,
+        audio: ycloudMsg.audio,
+        sticker: ycloudMsg.sticker,
+        location: ycloudMsg.location,
+        interactive: ycloudMsg.interactive,
       }
-      const senderPhone = (msg.from || msg.customer?.phone_number || '').replace(/\+/g, '')
+      const senderPhone = normalizePhone(fromPhone)
       const contact = {
-        profile: { name: msg.customer?.name || msg.from || senderPhone },
+        profile: { name: ycloudMsg.customer?.name || ycloudMsg.senderName || senderPhone || 'WhatsApp User' },
         wa_id: senderPhone,
       }
       const decryptedAccessToken = decrypt(config.access_token)
@@ -679,7 +695,7 @@ async function processMessage(
     media_url: mediaUrl,
     message_id: message.id,
     status: 'delivered',
-    created_at: new Date(parseInt(message.timestamp) * 1000).toISOString(),
+    created_at: safeIsoTimestamp(message.timestamp),
     reply_to_message_id: replyToInternalId,
     // Only populated for content_type='interactive'. Migration 010 added
     // the column; null for every other content_type so existing inserts
