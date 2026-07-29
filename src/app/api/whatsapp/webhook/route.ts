@@ -285,12 +285,14 @@ async function processWebhook(body: any) {
       // Handle incoming messages
       if (!value.messages || !value.contacts) continue
 
-      const phoneNumberId = value.metadata?.phone_number_id
+      const rawPhoneId = value.metadata?.phone_number_id || ''
+      const cleanPhoneId = rawPhoneId.replace(/\D/g, '')
+      const plusPhoneId = cleanPhoneId ? `+${cleanPhoneId}` : rawPhoneId
 
       let { data: configRows } = await supabaseAdmin()
         .from('whatsapp_config')
         .select('*')
-        .eq('phone_number_id', phoneNumberId)
+        .or(`phone_number_id.eq.${rawPhoneId},phone_number_id.eq.${cleanPhoneId},phone_number_id.eq.${plusPhoneId},waba_id.eq.${rawPhoneId}`)
 
       if (!configRows || configRows.length === 0) {
         const { data: fallbackConfig } = await supabaseAdmin()
