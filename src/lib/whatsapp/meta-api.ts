@@ -228,6 +228,39 @@ export async function sendTextMessage(
   args: SendTextMessageArgs
 ): Promise<MetaSendResult> {
   const { phoneNumberId, accessToken, to, text, contextMessageId } = args
+
+  if (isYCloudToken(accessToken)) {
+    const url = 'https://api.ycloud.com/v2/whatsapp/messages'
+    const cleanFrom = phoneNumberId.replace(/\D/g, '')
+    const cleanTo = to.replace(/\D/g, '')
+    const body: Record<string, unknown> = {
+      from: `+${cleanFrom}`,
+      to: `+${cleanTo}`,
+      type: 'text',
+      text: { body: text },
+    }
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': accessToken,
+      },
+      body: JSON.stringify(body),
+    })
+    if (!response.ok) {
+      let message = `YCloud API error: ${response.status}`
+      try {
+        const errJson = await response.json()
+        if (errJson.message) {
+          message = errJson.message
+        }
+      } catch {}
+      throw new Error(message)
+    }
+    const data = await response.json()
+    return { messageId: data.id || `yc_${Date.now()}` }
+  }
+
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
