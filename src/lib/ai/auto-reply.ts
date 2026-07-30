@@ -179,15 +179,33 @@ export async function dispatchInboundToAiReply(
     }
     if (claimed !== true) return // lost the per-conversation cap race
 
-    await engineSendText({
-      accountId,
-      userId: configOwnerUserId,
-      conversationId,
-      contactId,
-      text,
-      aiGenerated: true,
-    })
+    try {
+      await engineSendText({
+        accountId,
+        userId: configOwnerUserId,
+        conversationId,
+        contactId,
+        text,
+        aiGenerated: true,
+      })
+    } catch (sendErr) {
+      console.error('[ai auto-reply] engineSendText failed, rolling back claimed slot:', sendErr)
+      // Roll back the claimed slot so a failed send does not permanently consume the conversation cap
+      const { data: currentConv } = await db
+        .from('conversations')
+        .select('ai_reply_count')
+        .eq('id', conversationId)
+        .maybeSingle()
+      if (currentConv && (currentConv.ai_reply_count ?? 0) > 0) {
+        await db
+          .from('conversations')
+          .update({ ai_reply_count: (currentConv.ai_reply_count ?? 1) - 1 })
+          .eq('id', conversationId)
+      }
+      throw sendErr
+    }
   } catch (err) {
     console.error('[ai auto-reply] dispatch failed:', err)
   }
 }
+

@@ -86,7 +86,7 @@ export async function engineSendText(
     .from('whatsapp_config')
     .select('*')
     .eq('account_id', args.accountId)
-    .single()
+    .maybeSingle()
   if (configErr || !config) {
     throw new Error('WhatsApp not configured for this account')
   }
