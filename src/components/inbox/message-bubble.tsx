@@ -14,6 +14,8 @@ import {
   ImageOff,
   CornerDownLeft,
   Sparkles,
+  X,
+  ExternalLink,
 } from "lucide-react";
 import { format } from "date-fns";
 import { ReplyQuote } from "./reply-quote";
@@ -60,6 +62,7 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [isOpen, setIsOpen] = useState(false);
 
   const loadImage = useCallback(async () => {
     if (!url) return;
@@ -110,12 +113,53 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
   }
 
   return (
-    <img
-      src={src ?? ""}
-      alt={alt}
-      className="max-h-64 max-w-60 rounded-lg object-cover"
-      onError={() => setError(true)}
-    />
+    <>
+      <img
+        src={src ?? ""}
+        alt={alt}
+        onClick={() => setIsOpen(true)}
+        className="max-h-64 max-w-60 cursor-pointer rounded-lg object-cover transition-opacity hover:opacity-90"
+        onError={() => setError(true)}
+      />
+
+      {isOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4 backdrop-blur-sm"
+          onClick={() => setIsOpen(false)}
+        >
+          <div
+            className="relative flex max-h-[90vh] max-w-[90vw] flex-col items-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="absolute -top-12 right-0 flex items-center gap-3">
+              {src && (
+                <a
+                  href={src}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded-full bg-white/20 p-2 text-white transition-colors hover:bg-white/40"
+                  title="Abrir en pestaña nueva"
+                >
+                  <ExternalLink className="h-5 w-5" />
+                </a>
+              )}
+              <button
+                onClick={() => setIsOpen(false)}
+                className="rounded-full bg-white/20 p-2 text-white transition-colors hover:bg-white/40"
+                title="Cerrar"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <img
+              src={src ?? ""}
+              alt={alt}
+              className="max-h-[85vh] max-w-[90vw] rounded-lg object-contain"
+            />
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

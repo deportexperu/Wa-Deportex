@@ -120,6 +120,14 @@ function InboxPageInner() {
     knownConvIdsRef.current = next;
   }, [conversations]);
 
+function sortByLastMessageAt(list: Conversation[]): Conversation[] {
+  return [...list].sort((a, b) => {
+    const timeA = a.last_message_at ? new Date(a.last_message_at).getTime() : 0;
+    const timeB = b.last_message_at ? new Date(b.last_message_at).getTime() : 0;
+    return timeB - timeA;
+  });
+}
+
   // Pull the conversation row with its `contact` joined and merge it
   // into state. Needed because Supabase Realtime payloads only carry the
   // row's own columns — a brand-new conversation arrives without a
@@ -153,19 +161,22 @@ function InboxPageInner() {
       const fetched = normalizeConversation(data);
       setConversations((prev) => {
         const existing = prev.find((c) => c.id === fetched.id);
+        let next: Conversation[];
         if (existing) {
           // Already in state — keep its fields (a realtime UPDATE may
           // have landed while the fetch was in flight and patched
           // last_message_text / unread_count to fresher values than
           // the row we just read). Only backfill `contact`, which the
           // realtime payloads never carry.
-          return prev.map((c) =>
+          next = prev.map((c) =>
             c.id === fetched.id
-              ? { ...c, contact: c.contact ?? fetched.contact }
+              ? { ...c, ...fetched, contact: c.contact ?? fetched.contact }
               : c,
           );
+        } else {
+          next = [fetched, ...prev];
         }
-        return [fetched, ...prev];
+        return sortByLastMessageAt(next);
       });
     } finally {
       hydratingConvIdsRef.current.delete(convId);
@@ -240,21 +251,24 @@ function InboxPageInner() {
         // knownConvIdsRef for why a closure flag inside the updater would
         // always read false here.
         if (knownConvIdsRef.current.has(newMsg.conversation_id)) {
-          setConversations((prev) =>
-            prev.map((c) =>
+          setConversations((prev) => {
+            const updated = prev.map((c) =>
               c.id === newMsg.conversation_id
                 ? {
                     ...c,
-                    last_message_text: newMsg.content_text ?? "",
+                    last_message_text: newMsg.content_text || `[${newMsg.content_type}]`,
                     last_message_at: newMsg.created_at,
                     unread_count:
                       activeConversation?.id === newMsg.conversation_id
                         ? 0
-                        : c.unread_count + 1,
+                        : newMsg.sender_type === "customer"
+                          ? c.unread_count + 1
+                          : c.unread_count,
                   }
                 : c,
-            ),
-          );
+            );
+            return sortByLastMessageAt(updated);
+          });
         } else {
           // First time we're seeing this conv: the conv-INSERT event
           // hasn't landed yet, or was missed. Hydrate from the DB so
@@ -293,7 +307,7 @@ function InboxPageInner() {
         if (!knownConvIdsRef.current.has(conv.id)) {
           setConversations((prev) => {
             if (prev.some((c) => c.id === conv.id)) return prev;
-            return [conv, ...prev];
+            return sortByLastMessageAt([conv, ...prev]);
           });
           hydrateConversation(conv.id);
         }
@@ -307,8 +321,8 @@ function InboxPageInner() {
           // back on for the ~100ms it takes for the reset effect's server
           // UPDATE to round-trip. Non-active convs take the value as-is.
           const isActive = activeConversation?.id === conv.id;
-          setConversations((prev) =>
-            prev.map((c) =>
+          setConversations((prev) => {
+            const updated = prev.map((c) =>
               c.id === conv.id
                 ? {
                     ...c,
@@ -316,8 +330,9 @@ function InboxPageInner() {
                     unread_count: isActive ? 0 : conv.unread_count,
                   }
                 : c,
-            ),
-          );
+            );
+            return sortByLastMessageAt(updated);
+          });
         } else {
           // UPDATE arrived before the INSERT (or after a missed INSERT)
           // — fetch the row so it surfaces with its contact joined. The
