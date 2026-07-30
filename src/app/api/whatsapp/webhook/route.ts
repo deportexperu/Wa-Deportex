@@ -45,11 +45,11 @@ interface WhatsAppMessage {
   timestamp: string
   type: string
   text?: { body: string }
-  image?: { id: string; mime_type: string; caption?: string }
-  video?: { id: string; mime_type: string; caption?: string }
-  document?: { id: string; mime_type: string; filename?: string; caption?: string }
-  audio?: { id: string; mime_type: string }
-  sticker?: { id: string; mime_type: string }
+  image?: { id?: string; link?: string; url?: string; mime_type?: string; caption?: string }
+  video?: { id?: string; link?: string; url?: string; mime_type?: string; caption?: string }
+  document?: { id?: string; link?: string; url?: string; mime_type?: string; filename?: string; caption?: string }
+  audio?: { id?: string; link?: string; url?: string; mime_type?: string }
+  sticker?: { id?: string; link?: string; url?: string; mime_type?: string }
   location?: { latitude: number; longitude: number; name?: string; address?: string }
   reaction?: { message_id: string; emoji: string }
   /**
@@ -1021,23 +1021,11 @@ async function parseMessageContent(
    */
   interactiveReplyId: string | null
 }> {
-  // getMediaUrl signature is (mediaId, accessToken) — earlier code had
-  // the args swapped, so every verification hit an invalid Meta URL and
-  // fell through to the catch block, leaving mediaUrl as null. That's
-  // why images showed up as empty bubbles in the inbox.
-  const verifyAndBuildUrl = async (
-    mediaId: string
-  ): Promise<string | null> => {
-    try {
-      await getMediaUrl({ mediaId, accessToken })
-      return `/api/whatsapp/media/${mediaId}`
-    } catch (error) {
-      console.error(
-        `Failed to verify media ${mediaId} with Meta:`,
-        error instanceof Error ? error.message : error
-      )
-      return null
-    }
+  const buildProxyUrl = (mediaObj?: { id?: string; link?: string; url?: string }): string | null => {
+    if (!mediaObj) return null
+    const target = mediaObj.id || mediaObj.link || mediaObj.url
+    if (!target) return null
+    return `/api/whatsapp/media/${encodeURIComponent(target)}`
   }
 
   // Default shape — each case overrides only the fields it cares about.
@@ -1054,45 +1042,45 @@ async function parseMessageContent(
       return { ...empty, contentText: message.text?.body || null }
 
     case 'image':
-      if (message.image?.id) {
+      if (message.image) {
         return {
           ...empty,
           contentText: message.image.caption || null,
-          mediaUrl: await verifyAndBuildUrl(message.image.id),
-          mediaType: message.image.mime_type,
+          mediaUrl: buildProxyUrl(message.image),
+          mediaType: message.image.mime_type || 'image/jpeg',
         }
       }
       return empty
 
     case 'video':
-      if (message.video?.id) {
+      if (message.video) {
         return {
           ...empty,
           contentText: message.video.caption || null,
-          mediaUrl: await verifyAndBuildUrl(message.video.id),
-          mediaType: message.video.mime_type,
+          mediaUrl: buildProxyUrl(message.video),
+          mediaType: message.video.mime_type || 'video/mp4',
         }
       }
       return empty
 
     case 'document':
-      if (message.document?.id) {
+      if (message.document) {
         return {
           ...empty,
           contentText:
             message.document.caption || message.document.filename || null,
-          mediaUrl: await verifyAndBuildUrl(message.document.id),
-          mediaType: message.document.mime_type,
+          mediaUrl: buildProxyUrl(message.document),
+          mediaType: message.document.mime_type || 'application/pdf',
         }
       }
       return empty
 
     case 'audio':
-      if (message.audio?.id) {
+      if (message.audio) {
         return {
           ...empty,
-          mediaUrl: await verifyAndBuildUrl(message.audio.id),
-          mediaType: message.audio.mime_type,
+          mediaUrl: buildProxyUrl(message.audio),
+          mediaType: message.audio.mime_type || 'audio/ogg',
         }
       }
       return empty
@@ -1101,11 +1089,11 @@ async function parseMessageContent(
       // Stickers are images under the hood. Treat them as such so the
       // MessageBubble renders the <img>. The caller maps the DB
       // content_type to 'image' for the CHECK constraint.
-      if (message.sticker?.id) {
+      if (message.sticker) {
         return {
           ...empty,
-          mediaUrl: await verifyAndBuildUrl(message.sticker.id),
-          mediaType: message.sticker.mime_type,
+          mediaUrl: buildProxyUrl(message.sticker),
+          mediaType: message.sticker.mime_type || 'image/webp',
         }
       }
       return empty

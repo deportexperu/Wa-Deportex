@@ -1028,14 +1028,37 @@ export interface GetMediaUrlArgs {
 }
 
 /**
- * Resolve a media ID to Meta's (short-lived, authenticated) CDN URL
+ * Resolve a media ID to Meta's or YCloud's CDN URL
  * plus the MIME type. Step one of the media-proxy flow.
  */
 export async function getMediaUrl(
   args: GetMediaUrlArgs
 ): Promise<{ url: string; mimeType: string }> {
   const { mediaId, accessToken } = args
-  const response = await fetch(`${META_API_BASE}/${mediaId}`, {
+  const decoded = decodeURIComponent(mediaId)
+
+  // Direct URL passed as mediaId
+  if (decoded.startsWith('http://') || decoded.startsWith('https://')) {
+    return { url: decoded, mimeType: 'application/octet-stream' }
+  }
+
+  // YCloud API
+  if (isYCloudToken(accessToken)) {
+    try {
+      const response = await fetch(`https://api.ycloud.com/v2/whatsapp/media/${decoded}`, {
+        headers: { 'X-API-Key': accessToken },
+      })
+      if (response.ok) {
+        const data = await response.json()
+        if (data.url) return { url: data.url, mimeType: data.mimeType || 'application/octet-stream' }
+      }
+    } catch {
+      /* fallback to Meta */
+    }
+  }
+
+  // Meta Cloud API
+  const response = await fetch(`${META_API_BASE}/${decoded}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   if (!response.ok) {
@@ -1059,9 +1082,16 @@ export async function downloadMedia(
   args: DownloadMediaArgs
 ): Promise<{ buffer: Buffer; contentType: string }> {
   const { downloadUrl, accessToken } = args
-  const response = await fetch(downloadUrl, {
+  // Try with Authorization header first (Meta Cloud API requires Bearer header)
+  let response = await fetch(downloadUrl, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
+
+  // If header auth fails (e.g. S3 presigned URL rejects extra auth header)
+  if (!response.ok) {
+    response = await fetch(downloadUrl)
+  }
+
   if (!response.ok) {
     throw new Error(`Media download failed: ${response.status}`)
   }

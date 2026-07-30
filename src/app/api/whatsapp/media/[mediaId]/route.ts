@@ -49,13 +49,27 @@ export async function GET(
     }
 
     // Fetch and decrypt WhatsApp config
-    const { data: config, error: configError } = await supabase
-      .from('whatsapp_config')
-      .select('*')
-      .eq('account_id', accountId)
-      .single()
+    let config = null
+    if (accountId) {
+      const { data: userConfig } = await supabase
+        .from('whatsapp_config')
+        .select('*')
+        .eq('account_id', accountId)
+        .limit(1)
+        .maybeSingle()
+      config = userConfig
+    }
 
-    if (configError || !config) {
+    if (!config) {
+      const { data: fallbackConfig } = await supabase
+        .from('whatsapp_config')
+        .select('*')
+        .limit(1)
+        .maybeSingle()
+      config = fallbackConfig
+    }
+
+    if (!config) {
       return NextResponse.json(
         { error: 'WhatsApp not configured' },
         { status: 400 }
