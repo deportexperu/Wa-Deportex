@@ -333,37 +333,31 @@ async function processWebhook(body: any) {
         const message = value.messages[i]
         const cleanMsgFrom = (message.from || '').replace(/\D/g, '')
 
-        // Detect outbound-from-app: sender matches the business phone number.
-        // Accept either exact or suffix match to handle country-code variations.
+        // Robust candidate extraction for recipient phone number
+        const recipientCandidate =
+          value.contacts?.[i]?.wa_id ||
+          value.contacts?.[0]?.wa_id ||
+          (message as any).recipient_id ||
+          message.to ||
+          (message as any).destination ||
+          value.statuses?.[i]?.recipient_id ||
+          value.statuses?.[0]?.recipient_id
+
+        // Detect outbound-from-app: sender matches business number OR message contains a recipient_id
         const isOutboundFromApp =
           Boolean(cleanMsgFrom) &&
-          Boolean(displayPhone) &&
-          (cleanMsgFrom === displayPhone ||
-            cleanMsgFrom.endsWith(displayPhone) ||
-            displayPhone.endsWith(cleanMsgFrom))
+          ((displayPhone && (cleanMsgFrom === displayPhone || cleanMsgFrom.endsWith(displayPhone) || displayPhone.endsWith(cleanMsgFrom))) ||
+           (cleanPhoneId && (cleanMsgFrom === cleanPhoneId || cleanMsgFrom.endsWith(cleanPhoneId) || cleanPhoneId.endsWith(cleanMsgFrom))))
 
-        if (isOutboundFromApp) {
-          // contacts[] points to the MESSAGE RECIPIENT (the customer).
-          const recipientContact = value.contacts?.[i] ?? value.contacts?.[0]
-          if (recipientContact) {
-            await processOutboundAppMessage(
-              message,
-              recipientContact,
-              config.account_id,
-              decryptedAccessToken
-            )
-          } else {
-            // No contacts array: try using message.to as recipient phone
-            const toPhone = message.to ? normalizePhone(message.to) : null
-            if (toPhone) {
-              await processOutboundAppMessage(
-                message,
-                { profile: { name: '' }, wa_id: toPhone },
-                config.account_id,
-                decryptedAccessToken
-              )
-            }
-          }
+        if (isOutboundFromApp && recipientCandidate) {
+          const recipientPhone = normalizePhone(recipientCandidate)
+          await processOutboundAppMessage(
+            message,
+            { profile: { name: value.contacts?.[i]?.profile?.name || '' }, wa_id: recipientPhone },
+            config.account_id,
+            config.user_id,
+            decryptedAccessToken
+          )
           continue
         }
 
@@ -927,6 +921,7 @@ async function processOutboundAppMessage(
   message: WhatsAppMessage,
   recipientContact: { profile: { name: string }; wa_id: string },
   accountId: string,
+  configOwnerUserId: string,
   accessToken: string
 ) {
   // 1. Dedup: the CRM /send route already stores messages it sends, so if
@@ -939,26 +934,25 @@ async function processOutboundAppMessage(
 
   if (existing) return
 
-  // 2. Resolve recipient contact
+  // 2. Resolve or create recipient contact
   const recipientPhone = normalizePhone(recipientContact.wa_id)
-  const contact = await findExistingContact(supabaseAdmin(), accountId, recipientPhone)
-  if (!contact) {
-    // No contact means no existing conversation thread — skip.
-    // The customer will appear in the CRM once they send a message back.
-    return
-  }
+  const contactOutcome = await findOrCreateContact(
+    accountId,
+    configOwnerUserId,
+    recipientPhone,
+    recipientContact.profile?.name || recipientPhone
+  )
+  if (!contactOutcome) return
+  const contact = contactOutcome.contact
 
-  // 3. Find the existing conversation (oldest-first, same as inbound path)
-  const { data: convRows } = await supabaseAdmin()
-    .from('conversations')
-    .select('*')
-    .eq('account_id', accountId)
-    .eq('contact_id', contact.id)
-    .order('created_at', { ascending: true })
-    .limit(1)
-
-  if (!convRows || convRows.length === 0) return
-  const conversation = convRows[0]
+  // 3. Find or create conversation
+  const convResult = await findOrCreateConversation(
+    accountId,
+    configOwnerUserId,
+    contact.id
+  )
+  if (!convResult) return
+  const conversation = convResult.conversation
 
   // 4. Parse content (media URLs, text, etc.) using the shared helper
   const { contentText, mediaUrl } = await parseMessageContent(message, accessToken)
@@ -984,8 +978,6 @@ async function processOutboundAppMessage(
   })
 
   if (msgError) {
-    // Unique-violation means the dedup check above raced with another
-    // delivery — safe to ignore.
     if (!isUniqueViolation(msgError)) {
       console.error('[webhook] Error inserting outbound app message:', msgError)
     }
