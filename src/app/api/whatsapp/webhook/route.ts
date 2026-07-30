@@ -36,6 +36,12 @@ function supabaseAdmin() {
 interface WhatsAppMessage {
   id: string
   from: string
+  /**
+   * Recipient phone number. Present on messages sent by the business from
+   * WhatsApp Web or the native WhatsApp Business app (outbound-from-app).
+   * Not present on regular inbound messages from customers.
+   */
+  to?: string
   timestamp: string
   type: string
   text?: { body: string }
@@ -282,8 +288,11 @@ async function processWebhook(body: any) {
         }
       }
 
-      // Handle incoming messages
-      if (!value.messages || !value.contacts) continue
+      // Handle incoming messages AND outbound messages sent from
+      // WhatsApp Web / native app by the business.
+      // We only skip the change entry when there are no messages at all
+      // (e.g. a pure-status or template webhook entry).
+      if (!value.messages) continue
 
       const rawPhoneId = value.metadata?.phone_number_id || ''
       const cleanPhoneId = rawPhoneId.replace(/\D/g, '')
@@ -313,8 +322,53 @@ async function processWebhook(body: any) {
       const config = configRows[0]
       const decryptedAccessToken = decrypt(config.access_token)
 
+      // The display_phone_number from metadata is the business's own number
+      // (e.g. "51998189503"). When message.from matches this number, the
+      // message was sent BY the business from WhatsApp Web or the native app
+      // — not by a customer. We route these to a separate handler so they
+      // appear in the CRM thread as agent messages.
+      const displayPhone = (value.metadata?.display_phone_number || '').replace(/\D/g, '')
+
       for (let i = 0; i < value.messages.length; i++) {
         const message = value.messages[i]
+        const cleanMsgFrom = (message.from || '').replace(/\D/g, '')
+
+        // Detect outbound-from-app: sender matches the business phone number.
+        // Accept either exact or suffix match to handle country-code variations.
+        const isOutboundFromApp =
+          Boolean(cleanMsgFrom) &&
+          Boolean(displayPhone) &&
+          (cleanMsgFrom === displayPhone ||
+            cleanMsgFrom.endsWith(displayPhone) ||
+            displayPhone.endsWith(cleanMsgFrom))
+
+        if (isOutboundFromApp) {
+          // contacts[] points to the MESSAGE RECIPIENT (the customer).
+          const recipientContact = value.contacts?.[i] ?? value.contacts?.[0]
+          if (recipientContact) {
+            await processOutboundAppMessage(
+              message,
+              recipientContact,
+              config.account_id,
+              decryptedAccessToken
+            )
+          } else {
+            // No contacts array: try using message.to as recipient phone
+            const toPhone = message.to ? normalizePhone(message.to) : null
+            if (toPhone) {
+              await processOutboundAppMessage(
+                message,
+                { profile: { name: '' }, wa_id: toPhone },
+                config.account_id,
+                decryptedAccessToken
+              )
+            }
+          }
+          continue
+        }
+
+        // Regular inbound message from a customer.
+        if (!value.contacts) continue
         const contact = value.contacts[i] || value.contacts[0]
 
         await processMessage(
@@ -857,6 +911,100 @@ async function processMessage(
   })
 }
 
+/**
+ * Handle a message sent BY the business from WhatsApp Web or the native
+ * WhatsApp Business app (i.e. not via the CRM's /send route).
+ *
+ * Strategy:
+ *   1. Skip if this message_id is already in the DB (sent via CRM — the
+ *      /send route already persisted it before it bounced back as a webhook).
+ *   2. Find the recipient contact. We never auto-create contacts here —
+ *      only messages where the conversation was already initiated by the
+ *      customer show up in the CRM thread.
+ *   3. Insert as sender_type='agent' and bump the conversation preview.
+ */
+async function processOutboundAppMessage(
+  message: WhatsAppMessage,
+  recipientContact: { profile: { name: string }; wa_id: string },
+  accountId: string,
+  accessToken: string
+) {
+  // 1. Dedup: the CRM /send route already stores messages it sends, so if
+  //    the webhook echoes one back we must not insert a duplicate row.
+  const { data: existing } = await supabaseAdmin()
+    .from('messages')
+    .select('id')
+    .eq('message_id', message.id)
+    .maybeSingle()
+
+  if (existing) return
+
+  // 2. Resolve recipient contact
+  const recipientPhone = normalizePhone(recipientContact.wa_id)
+  const contact = await findExistingContact(supabaseAdmin(), accountId, recipientPhone)
+  if (!contact) {
+    // No contact means no existing conversation thread — skip.
+    // The customer will appear in the CRM once they send a message back.
+    return
+  }
+
+  // 3. Find the existing conversation (oldest-first, same as inbound path)
+  const { data: convRows } = await supabaseAdmin()
+    .from('conversations')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('contact_id', contact.id)
+    .order('created_at', { ascending: true })
+    .limit(1)
+
+  if (!convRows || convRows.length === 0) return
+  const conversation = convRows[0]
+
+  // 4. Parse content (media URLs, text, etc.) using the shared helper
+  const { contentText, mediaUrl } = await parseMessageContent(message, accessToken)
+
+  const ALLOWED_CONTENT_TYPES = new Set([
+    'text', 'image', 'document', 'audio', 'video',
+    'location', 'template', 'interactive',
+  ])
+  const contentType = ALLOWED_CONTENT_TYPES.has(message.type)
+    ? message.type
+    : message.type === 'sticker' ? 'image' : 'text'
+
+  // 5. Insert as an agent (outbound) message
+  const { error: msgError } = await supabaseAdmin().from('messages').insert({
+    conversation_id: conversation.id,
+    sender_type: 'agent',
+    content_type: contentType,
+    content_text: contentText,
+    media_url: mediaUrl,
+    message_id: message.id,
+    status: 'sent',
+    created_at: safeIsoTimestamp(message.timestamp),
+  })
+
+  if (msgError) {
+    // Unique-violation means the dedup check above raced with another
+    // delivery — safe to ignore.
+    if (!isUniqueViolation(msgError)) {
+      console.error('[webhook] Error inserting outbound app message:', msgError)
+    }
+    return
+  }
+
+  // 6. Update conversation preview
+  await supabaseAdmin()
+    .from('conversations')
+    .update({
+      last_message_text: contentText || `[${message.type}]`,
+      last_message_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', conversation.id)
+
+  console.log('[webhook] Captured outbound-from-app message:', message.id)
+}
+
 async function parseMessageContent(
   message: WhatsAppMessage,
   accessToken: string
@@ -1031,14 +1179,27 @@ async function findOrCreateContact(
   )
 
   if (existingContact) {
-    // Update name if it changed
-    if (name && name !== existingContact.name) {
+    // Update the stored name when:
+    //   a) A real name is provided and differs from what's stored, OR
+    //   b) The stored name looks like a phone number (auto-fallback from a
+    //      previous message that arrived without a profile name) and WhatsApp
+    //      is now sending a proper name — always prefer the human name.
+    const storedName = existingContact.name || ''
+    const storedLooksLikePhone = /^\+?[\d\s\-().]{7,20}$/.test(storedName)
+    const shouldUpdateName =
+      name && (name !== storedName || storedLooksLikePhone)
+
+    let contactRecord = existingContact
+    if (shouldUpdateName) {
       await supabaseAdmin()
         .from('contacts')
         .update({ name, updated_at: new Date().toISOString() })
         .eq('id', existingContact.id)
+      // Reflect the update in the returned object so downstream
+      // callers (e.g. automation triggers) see the correct name.
+      contactRecord = { ...existingContact, name }
     }
-    return { contact: existingContact, wasCreated: false }
+    return { contact: contactRecord, wasCreated: false }
   }
 
   // Create new contact. account_id is the tenancy column;
