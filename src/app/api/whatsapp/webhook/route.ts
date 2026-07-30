@@ -225,8 +225,8 @@ async function processWebhook(body: any) {
   if (!body) return
 
   // 1. Support YCloud Native Payload Format
-  const ycloudMsg = body.whatsappInboundMessage || body.whatsappMessage || body.message || body.data
-  if (ycloudMsg && (body.type?.includes('message') || body.type?.includes('inbound') || ycloudMsg.from)) {
+  const ycloudMsg = body.whatsappInboundMessage || body.whatsappOutboundMessage || body.whatsappMessage || body.message || body.data
+  if (ycloudMsg && (body.type?.includes('message') || body.type?.includes('inbound') || body.type?.includes('outbound') || ycloudMsg.from || ycloudMsg.to)) {
     const { data: config } = await supabaseAdmin()
       .from('whatsapp_config')
       .select('*')
@@ -235,33 +235,58 @@ async function processWebhook(body: any) {
 
     if (config) {
       const fromPhone = ycloudMsg.from || ycloudMsg.customer?.phone_number || ycloudMsg.sender || ''
+      const toPhone = ycloudMsg.to || ycloudMsg.recipient || ycloudMsg.customer?.phone_number || ''
+      
+      const cleanFrom = normalizePhone(fromPhone)
+      const cleanTo = normalizePhone(toPhone)
+      const displayPhone = (config.phone_number_id || '').replace(/\D/g, '')
+
+      const isOutbound =
+        Boolean(body.type?.includes('outbound') || body.type?.includes('sent')) ||
+        Boolean(cleanFrom && displayPhone && (cleanFrom === displayPhone || cleanFrom.endsWith(displayPhone) || displayPhone.endsWith(cleanFrom)))
+
+      const mediaObj = ycloudMsg.image || ycloudMsg.video || ycloudMsg.document || ycloudMsg.audio || ycloudMsg.sticker
+      const mediaIdOrUrl = mediaObj?.url || mediaObj?.link || mediaObj?.fileUrl || mediaObj?.id || null
+
       const message: WhatsAppMessage = {
         id: ycloudMsg.id || `yc_${Date.now()}`,
-        from: fromPhone,
-        timestamp: ycloudMsg.sendTime || ycloudMsg.timestamp || ycloudMsg.createTime || String(Math.floor(Date.now() / 1000)),
-        type: ycloudMsg.type || 'text',
+        from: cleanFrom,
+        to: cleanTo,
+        timestamp: safeIsoTimestamp(ycloudMsg.sendTime || ycloudMsg.timestamp || ycloudMsg.createTime || String(Math.floor(Date.now() / 1000))),
+        type: ycloudMsg.type || (ycloudMsg.image ? 'image' : ycloudMsg.video ? 'video' : ycloudMsg.audio ? 'audio' : ycloudMsg.document ? 'document' : 'text'),
         text: typeof ycloudMsg.text === 'string' ? { body: ycloudMsg.text } : (ycloudMsg.text || { body: ycloudMsg.body || '' }),
-        image: ycloudMsg.image,
-        video: ycloudMsg.video,
-        document: ycloudMsg.document,
-        audio: ycloudMsg.audio,
-        sticker: ycloudMsg.sticker,
+        image: ycloudMsg.image ? { id: mediaIdOrUrl, link: mediaIdOrUrl, url: mediaIdOrUrl, mime_type: ycloudMsg.image.mime_type || ycloudMsg.image.contentType, caption: ycloudMsg.image.caption } : undefined,
+        video: ycloudMsg.video ? { id: mediaIdOrUrl, link: mediaIdOrUrl, url: mediaIdOrUrl, mime_type: ycloudMsg.video.mime_type || ycloudMsg.video.contentType, caption: ycloudMsg.video.caption } : undefined,
+        document: ycloudMsg.document ? { id: mediaIdOrUrl, link: mediaIdOrUrl, url: mediaIdOrUrl, mime_type: ycloudMsg.document.mime_type || ycloudMsg.document.contentType, filename: ycloudMsg.document.filename || ycloudMsg.document.fileName, caption: ycloudMsg.document.caption } : undefined,
+        audio: ycloudMsg.audio ? { id: mediaIdOrUrl, link: mediaIdOrUrl, url: mediaIdOrUrl, mime_type: ycloudMsg.audio.mime_type || ycloudMsg.audio.contentType } : undefined,
+        sticker: ycloudMsg.sticker ? { id: mediaIdOrUrl, link: mediaIdOrUrl, url: mediaIdOrUrl, mime_type: ycloudMsg.sticker.mime_type } : undefined,
         location: ycloudMsg.location,
         interactive: ycloudMsg.interactive,
       }
-      const senderPhone = normalizePhone(fromPhone)
-      const contact = {
-        profile: { name: ycloudMsg.customer?.name || ycloudMsg.senderName || senderPhone || 'WhatsApp User' },
-        wa_id: senderPhone,
-      }
+
       const decryptedAccessToken = decrypt(config.access_token)
-      await processMessage(
-        message,
-        contact,
-        config.account_id,
-        config.user_id,
-        decryptedAccessToken
-      )
+
+      if (isOutbound && cleanTo) {
+        await processOutboundAppMessage(
+          message,
+          { profile: { name: '' }, wa_id: cleanTo },
+          config.account_id,
+          config.user_id,
+          decryptedAccessToken
+        )
+      } else {
+        const contact = {
+          profile: { name: ycloudMsg.customer?.name || ycloudMsg.senderName || cleanFrom || 'WhatsApp User' },
+          wa_id: cleanFrom,
+        }
+        await processMessage(
+          message,
+          contact,
+          config.account_id,
+          config.user_id,
+          decryptedAccessToken
+        )
+      }
     }
     return
   }
