@@ -233,20 +233,36 @@ export async function sendTextMessage(
     const url = 'https://api.ycloud.com/v2/whatsapp/messages'
     const cleanFrom = phoneNumberId.replace(/\D/g, '')
     const cleanTo = to.replace(/\D/g, '')
-    const body: Record<string, unknown> = {
-      from: `+${cleanFrom}`,
+    const isValidPhoneFrom = cleanFrom.length >= 10 && cleanFrom.length <= 13
+
+    const sendWithBody = async (payload: Record<string, unknown>) => {
+      return await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': accessToken,
+        },
+        body: JSON.stringify(payload),
+      })
+    }
+
+    const payload: Record<string, unknown> = {
       to: `+${cleanTo}`,
       type: 'text',
       text: { body: text },
     }
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-Key': accessToken,
-      },
-      body: JSON.stringify(body),
-    })
+    if (isValidPhoneFrom) {
+      payload.from = `+${cleanFrom}`
+    }
+
+    let response = await sendWithBody(payload)
+
+    // Retry without 'from' parameter if 403 Forbidden (YCloud uses account default sender)
+    if (response.status === 403 && payload.from) {
+      delete payload.from
+      response = await sendWithBody(payload)
+    }
+
     if (!response.ok) {
       let message = `YCloud API error: ${response.status}`
       try {
@@ -320,6 +336,54 @@ export async function sendMediaMessage(
 ): Promise<MetaSendResult> {
   const { phoneNumberId, accessToken, to, kind, link, caption, filename, contextMessageId } = args
   if (!link) throw new Error('sendMediaMessage requires a link.')
+
+  if (isYCloudToken(accessToken)) {
+    const url = 'https://api.ycloud.com/v2/whatsapp/messages'
+    const cleanFrom = phoneNumberId.replace(/\D/g, '')
+    const cleanTo = to.replace(/\D/g, '')
+    const isValidPhoneFrom = cleanFrom.length >= 10 && cleanFrom.length <= 13
+
+    const mediaObj: Record<string, unknown> = { url: link }
+    if (caption && kind !== 'audio') mediaObj.caption = caption
+    if (kind === 'document' && filename) mediaObj.filename = filename
+
+    const payload: Record<string, unknown> = {
+      to: `+${cleanTo}`,
+      type: kind,
+      [kind]: mediaObj,
+    }
+    if (isValidPhoneFrom) payload.from = `+${cleanFrom}`
+
+    const sendWithBody = async (bodyPayload: Record<string, unknown>) => {
+      return await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': accessToken,
+        },
+        body: JSON.stringify(bodyPayload),
+      })
+    }
+
+    let response = await sendWithBody(payload)
+
+    if (response.status === 403 && payload.from) {
+      delete payload.from
+      response = await sendWithBody(payload)
+    }
+
+    if (!response.ok) {
+      let message = `YCloud API error: ${response.status}`
+      try {
+        const errJson = await response.json()
+        if (errJson.message) message = errJson.message
+      } catch {}
+      throw new Error(message)
+    }
+    const data = await response.json()
+    return { messageId: data.id || `yc_${Date.now()}` }
+  }
+
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
 
   // Audio accepts neither caption nor filename per Meta's spec — adding
