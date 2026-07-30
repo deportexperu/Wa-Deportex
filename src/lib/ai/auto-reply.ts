@@ -154,6 +154,21 @@ export async function dispatchInboundToAiReply(
         update.assigned_agent_id = config.handoffAgentId
       }
       await db.from('conversations').update(update).eq('id', conversationId)
+
+      // Send polite handoff message to WhatsApp so the customer isn't left in silence
+      const handoffText = text.trim() || 'Un momento por favor, te conecto con un asesor para atender tu consulta.'
+      try {
+        await engineSendText({
+          accountId,
+          userId: configOwnerUserId,
+          conversationId,
+          contactId,
+          text: handoffText,
+          aiGenerated: true,
+        })
+      } catch (sendErr) {
+        console.error('[ai auto-reply] failed to send handoff message:', sendErr)
+      }
       return
     }
 
