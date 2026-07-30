@@ -431,7 +431,7 @@ export function MessageComposer({
       });
       if (file.size === 0) return; // cancelled / empty take
       if (file.size > MEDIA_MAX_BYTES_BY_KIND.audio) {
-        toast.error("Recording is too long (over 16 MB).");
+        toast.error(`Recording is too long (over ${Math.round(MEDIA_MAX_BYTES_BY_KIND.audio / 1024 / 1024)} MB).`);
         return;
       }
       setBusy(true);
