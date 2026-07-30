@@ -384,13 +384,18 @@ export function MessageComposer({
   // Upload a captured file to chat-media and stage it as a draft.
   const stageUpload = useCallback(
     async (kind: ComposerMediaKind, file: File) => {
-      // Per-kind ceiling mirrors Meta's caps (image 5 MB, etc.) so we
-      // reject before upload rather than orphaning an object that Meta
-      // would then refuse at send.
-      const max = MEDIA_MAX_BYTES_BY_KIND[kind];
+      // If a video is larger than 16 MB (WhatsApp's native inline video cap),
+      // auto-switch it to 'document' so WhatsApp & YCloud allow sending up to 100 MB.
+      let targetKind = kind;
+      if (kind === "video" && file.size > 16 * 1024 * 1024) {
+        targetKind = "document";
+        toast.info("El video supera 16 MB. Se adjuntará como documento para permitir envío hasta 100 MB.");
+      }
+
+      const max = MEDIA_MAX_BYTES_BY_KIND[targetKind];
       if (file.size > max) {
         toast.error(
-          `File is ${(file.size / 1024 / 1024).toFixed(1)} MB — ${kind} limit is ${Math.round(
+          `File is ${(file.size / 1024 / 1024).toFixed(1)} MB — ${targetKind} limit is ${Math.round(
             max / 1024 / 1024,
           )} MB.`,
         );
@@ -401,7 +406,7 @@ export function MessageComposer({
         const { publicUrl, path } = await uploadAccountMedia(CHAT_MEDIA_BUCKET, file);
         // Replacing an existing draft? GC the previous object first.
         removeStaged(draftRef.current?.path);
-        setDraft({ kind, mediaUrl: publicUrl, path, filename: file.name, caption: "" });
+        setDraft({ kind: targetKind, mediaUrl: publicUrl, path, filename: file.name, caption: "" });
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Upload failed.");
       } finally {

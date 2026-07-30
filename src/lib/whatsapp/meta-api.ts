@@ -343,40 +343,63 @@ export async function sendMediaMessage(
     const cleanTo = to.replace(/\D/g, '')
     const isValidPhoneFrom = cleanFrom.length >= 10 && cleanFrom.length <= 13
 
-    const mediaObj: Record<string, unknown> = { url: link }
-    if (caption && kind !== 'audio') mediaObj.caption = caption
-    if (kind === 'document' && filename) mediaObj.filename = filename
+    const sendYCloudMedia = async (targetKind: string) => {
+      const mediaObj: Record<string, unknown> = { link }
+      if (caption && targetKind !== 'audio') mediaObj.caption = caption
+      if ((targetKind === 'document' || targetKind === 'video') && filename) {
+        mediaObj.filename = filename
+      } else if (targetKind === 'document' && !filename) {
+        mediaObj.filename = 'archivo.bin'
+      }
 
-    const payload: Record<string, unknown> = {
-      to: `+${cleanTo}`,
-      type: kind,
-      [kind]: mediaObj,
+      const payload: Record<string, unknown> = {
+        to: `+${cleanTo}`,
+        type: targetKind,
+        [targetKind]: mediaObj,
+      }
+      if (isValidPhoneFrom) payload.from = `+${cleanFrom}`
+
+      const sendWithBody = async (bodyPayload: Record<string, unknown>) => {
+        return await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': accessToken,
+          },
+          body: JSON.stringify(bodyPayload),
+        })
+      }
+
+      let res = await sendWithBody(payload)
+
+      if (res.status === 403 && payload.from) {
+        delete payload.from
+        res = await sendWithBody(payload)
+      }
+
+      return res
     }
-    if (isValidPhoneFrom) payload.from = `+${cleanFrom}`
 
-    const sendWithBody = async (bodyPayload: Record<string, unknown>) => {
-      return await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': accessToken,
-        },
-        body: JSON.stringify(bodyPayload),
-      })
-    }
+    let response = await sendYCloudMedia(kind)
 
-    let response = await sendWithBody(payload)
-
-    if (response.status === 403 && payload.from) {
-      delete payload.from
-      response = await sendWithBody(payload)
+    // Fallback: if video exceeds native 16 MB limit, retry sending as document (WhatsApp allows up to 100 MB for documents)
+    if (!response.ok && kind === 'video') {
+      const errText = await response.clone().text()
+      if (errText.includes('exceeded') || errText.includes('maximum allowed size') || response.status === 400) {
+        console.warn('[sendMediaMessage] Video exceeds native 16MB limit, retrying as document…')
+        response = await sendYCloudMedia('document')
+      }
     }
 
     if (!response.ok) {
       let message = `YCloud API error: ${response.status}`
       try {
         const errJson = await response.json()
-        if (errJson.message) message = errJson.message
+        if (errJson.message) {
+          message = errJson.message
+        } else if (errJson.error?.message) {
+          message = errJson.error.message
+        }
       } catch {}
       throw new Error(message)
     }
