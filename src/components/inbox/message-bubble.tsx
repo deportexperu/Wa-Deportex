@@ -16,6 +16,8 @@ import {
   Sparkles,
   X,
   ExternalLink,
+  Download,
+  Share2,
 } from "lucide-react";
 import { format } from "date-fns";
 import { ReplyQuote } from "./reply-quote";
@@ -96,6 +98,30 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadImage]);
 
+  const handleDownload = () => {
+    if (!src) return;
+    const a = document.createElement("a");
+    a.href = src;
+    a.download = `imagen_${Date.now()}.jpg`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const handleShare = async () => {
+    if (!src) return;
+    const shareUrl = url.startsWith("http") ? url : (window.location.origin + url);
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: "Imagen", url: shareUrl });
+        return;
+      } catch {}
+    }
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+    } catch {}
+  };
+
   if (error) {
     return (
       <div className="flex h-40 w-60 items-center justify-center rounded-lg bg-muted">
@@ -132,6 +158,20 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="absolute -top-12 right-0 flex items-center gap-3">
+              <button
+                onClick={handleDownload}
+                className="rounded-full bg-white/20 p-2 text-white transition-colors hover:bg-white/40"
+                title="Descargar"
+              >
+                <Download className="h-5 w-5" />
+              </button>
+              <button
+                onClick={handleShare}
+                className="rounded-full bg-white/20 p-2 text-white transition-colors hover:bg-white/40"
+                title="Compartir"
+              >
+                <Share2 className="h-5 w-5" />
+              </button>
               {src && (
                 <a
                   href={src}
