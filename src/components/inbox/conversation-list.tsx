@@ -9,7 +9,8 @@ import {
 } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
 import type { Conversation, ConversationStatus, Tag } from "@/types";
-import { Search, ChevronDown, X } from "lucide-react";
+import { Search, ChevronDown, X, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import { useTranslations } from "next-intl";
 import { Input } from "@/components/ui/input";
@@ -42,8 +43,6 @@ const STATUS_COLORS: Record<ConversationStatus, string> = {
   closed: "bg-muted-foreground",
 };
 
-
-
 type InboxFilter = ConversationStatus | "all" | "unread";
 
 export function ConversationList({
@@ -66,12 +65,38 @@ export function ConversationList({
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<InboxFilter>("all");
   const [loading, setLoading] = useState(true);
-  // Contact-based filters (issue #272). Tags use OR logic (a conversation
-  // matches if its contact carries any selected tag), consistent with
-  // Broadcast audience filtering. Company is an exact match on the field.
+  const [syncing, setSyncing] = useState(false);
   const [tags, setTags] = useState<Tag[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<string | null>(null);
+
+  const handleSync = useCallback(async () => {
+    setSyncing(true);
+    try {
+      const res = await fetch("/api/whatsapp/sync", { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(
+          data.syncedMessagesCount > 0
+            ? `Sincronizados ${data.syncedMessagesCount} mensajes nuevos.`
+            : "Conversaciones y contactos al día."
+        );
+        const supabase = createClient();
+        const { data: convData } = await supabase
+          .from("conversations")
+          .select(CONVERSATION_SELECT)
+          .order("last_message_at", { ascending: false });
+        if (convData && onConversationsLoadedRef.current) {
+          onConversationsLoadedRef.current(normalizeConversations(convData as any));
+        }
+      }
+    } catch (err) {
+      console.error("Error syncing:", err);
+      toast.error("Error al sincronizar con WhatsApp.");
+    } finally {
+      setSyncing(false);
+    }
+  }, []);
 
   // Keep the latest callback in a ref so the fetch effect below can
   // have a stable, empty-dep identity. Previously the fetch useCallback
@@ -226,14 +251,24 @@ export function ConversationList({
     <div className="flex h-full w-full flex-col border-r border-border bg-card lg:w-80">
       {/* Search + Filter */}
       <div className="space-y-2 border-b border-border p-3">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={search}
-            onChange={handleSearchChange}
-            placeholder={t("searchPlaceholder")}
-            className="border-border bg-muted pl-9 text-sm text-foreground placeholder-muted-foreground focus:border-primary/50"
-          />
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={handleSearchChange}
+              placeholder={t("searchPlaceholder")}
+              className="border-border bg-muted pl-9 text-sm text-foreground placeholder-muted-foreground focus:border-primary/50"
+            />
+          </div>
+          <button
+            onClick={handleSync}
+            disabled={syncing}
+            title="Sincronizar mensajes y contactos con WhatsApp"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted hover:bg-accent text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={cn("h-4 w-4", syncing && "animate-spin text-primary")} />
+          </button>
         </div>
 
         <div className="flex flex-wrap items-center gap-1">

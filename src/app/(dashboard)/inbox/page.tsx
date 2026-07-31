@@ -78,6 +78,31 @@ function InboxPageInner() {
     }
   }, []);
 
+  // Periodic background sync from WhatsApp API every 30 seconds
+  useEffect(() => {
+    const runSync = async () => {
+      try {
+        const res = await fetch("/api/whatsapp/sync", { method: "POST" });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.syncedMessagesCount > 0) {
+            setResyncToken((prev) => prev + 1);
+          }
+        }
+      } catch {
+        // Background sync is silent on failure
+      }
+    };
+
+    const timerInitial = setTimeout(runSync, 2000);
+    const interval = setInterval(runSync, 30000);
+
+    return () => {
+      clearTimeout(timerInitial);
+      clearInterval(interval);
+    };
+  }, []);
+
   const handleToggleContactPanel = useCallback(() => {
     setContactPanelOpen((prev) => {
       const next = !prev;
