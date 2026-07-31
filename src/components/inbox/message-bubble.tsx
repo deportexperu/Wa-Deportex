@@ -284,10 +284,18 @@ function MessageContent({ message, t }: { message: Message, t: ReturnType<typeof
             <LayoutTemplate className="h-3 w-3" />
             {t("template")}
           </span>
-          {message.content_text && (
+          {/* Show header image if the template included one */}
+          {message.media_url && (
+            <div className="mt-1">
+              <MediaImage url={message.media_url} alt="Template header image" />
+            </div>
+          )}
+          {message.content_text ? (
             <p className="mt-1 whitespace-pre-wrap break-words text-sm">
               {message.content_text}
             </p>
+          ) : (
+            <p className="mt-1 text-sm italic opacity-70">{t("templateSent")}</p>
           )}
         </div>
       );

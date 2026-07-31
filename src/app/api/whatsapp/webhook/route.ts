@@ -53,6 +53,19 @@ interface WhatsAppMessage {
   location?: { latitude: number; longitude: number; name?: string; address?: string }
   reaction?: { message_id: string; emoji: string }
   /**
+   * Template messages — outbound pre-approved templates.
+   * YCloud delivers these with the template name and components.
+   */
+  template?: {
+    name?: string
+    language?: { code: string }
+    components?: Array<{
+      type: string
+      text?: string
+      parameters?: Array<{ type: string; text?: string; image?: { link?: string; id?: string } }>
+    }>
+  }
+  /**
    * Set when the customer taps a button or list row on an interactive
    * message we sent. `button_reply.id` / `list_reply.id` is whatever id
    * we put on the button/row when sending — the Flows engine uses this
@@ -285,13 +298,43 @@ async function processWebhook(body: any) {
       const mediaObj = ycloudMsg.image || ycloudMsg.video || ycloudMsg.document || ycloudMsg.audio || ycloudMsg.sticker
       const mediaIdOrUrl = mediaObj?.url || mediaObj?.link || mediaObj?.fileUrl || mediaObj?.id || null
 
+      // YCloud sends template messages as type='unsupported' — remap to 'template'
+      // so the CRM can render them correctly with the template badge
+      let msgType = ycloudMsg.type || (ycloudMsg.image ? 'image' : ycloudMsg.video ? 'video' : ycloudMsg.audio ? 'audio' : ycloudMsg.document ? 'document' : 'text')
+      if (msgType === 'unsupported' || msgType === 'unknown') {
+        if (ycloudMsg.template || ycloudMsg.templateName || ycloudMsg.template_name) {
+          msgType = 'template'
+        } else {
+          msgType = 'text' // fallback so it renders as text
+        }
+      }
+
+      // Extract template body text from YCloud template components
+      const templateBodyText = (ycloudMsg.template || ycloudMsg.templateName)
+        ? (() => {
+            const tmpl = ycloudMsg.template || {}
+            const bodyComp = Array.isArray(tmpl.components)
+              ? tmpl.components.find((c: any) => c.type?.toLowerCase() === 'body')
+              : null
+            return bodyComp?.text ||
+              (Array.isArray(bodyComp?.parameters)
+                ? bodyComp.parameters.map((p: any) => p.text || '').filter(Boolean).join(' ')
+                : null) ||
+              tmpl.name || ycloudMsg.templateName || null
+          })()
+        : null
+
       const message: WhatsAppMessage = {
         id: ycloudMsg.id || `yc_${Date.now()}`,
         from: cleanFrom,
         to: cleanTo,
         timestamp: safeIsoTimestamp(ycloudMsg.sendTime || ycloudMsg.timestamp || ycloudMsg.createTime || String(Math.floor(Date.now() / 1000))),
-        type: ycloudMsg.type || (ycloudMsg.image ? 'image' : ycloudMsg.video ? 'video' : ycloudMsg.audio ? 'audio' : ycloudMsg.document ? 'document' : 'text'),
-        text: typeof ycloudMsg.text === 'string' ? { body: ycloudMsg.text } : (ycloudMsg.text || { body: ycloudMsg.body || '' }),
+        type: msgType,
+        text: typeof ycloudMsg.text === 'string'
+          ? { body: ycloudMsg.text }
+          : (ycloudMsg.text?.body
+            ? ycloudMsg.text
+            : { body: templateBodyText || ycloudMsg.body || '' }),
         image: ycloudMsg.image ? { id: mediaIdOrUrl, link: mediaIdOrUrl, url: mediaIdOrUrl, mime_type: ycloudMsg.image.mime_type || ycloudMsg.image.contentType, caption: ycloudMsg.image.caption } : undefined,
         video: ycloudMsg.video ? { id: mediaIdOrUrl, link: mediaIdOrUrl, url: mediaIdOrUrl, mime_type: ycloudMsg.video.mime_type || ycloudMsg.video.contentType, caption: ycloudMsg.video.caption } : undefined,
         document: ycloudMsg.document ? { id: mediaIdOrUrl, link: mediaIdOrUrl, url: mediaIdOrUrl, mime_type: ycloudMsg.document.mime_type || ycloudMsg.document.contentType, filename: ycloudMsg.document.filename || ycloudMsg.document.fileName, caption: ycloudMsg.document.caption } : undefined,
@@ -299,6 +342,7 @@ async function processWebhook(body: any) {
         sticker: ycloudMsg.sticker ? { id: mediaIdOrUrl, link: mediaIdOrUrl, url: mediaIdOrUrl, mime_type: ycloudMsg.sticker.mime_type } : undefined,
         location: ycloudMsg.location,
         interactive: ycloudMsg.interactive,
+        template: ycloudMsg.template || (ycloudMsg.templateName ? { name: ycloudMsg.templateName } : undefined),
       }
 
       const decryptedAccessToken = decrypt(config.access_token)
@@ -1185,6 +1229,39 @@ async function parseMessageContent(
       }
       return { ...empty, contentText: '[Interactive reply]' }
     }
+
+    case 'template': {
+      // Extract body text from template components.
+      // Template body is always the 'body' component; header may have text too.
+      const tmpl = message.template
+      let templateText: string | null = null
+      if (tmpl?.components) {
+        const bodyComp = tmpl.components.find(c => c.type?.toLowerCase() === 'body')
+        const headerComp = tmpl.components.find(c => c.type?.toLowerCase() === 'header')
+        if (bodyComp?.text) {
+          templateText = bodyComp.text
+        } else if (bodyComp?.parameters) {
+          templateText = bodyComp.parameters.map((p: any) => p.text || '').filter(Boolean).join(' ')
+        }
+        if (headerComp?.parameters) {
+          const imgParam = headerComp.parameters.find((p: any) => p.type === 'image' && (p.image?.link || p.image?.id))
+          if (imgParam?.image) {
+            const imgRef = imgParam.image.link || imgParam.image.id
+            const mediaObj = { link: imgRef, id: imgRef, url: imgRef }
+            return { ...empty, contentText: templateText || tmpl.name || null, mediaUrl: buildProxyUrl(mediaObj), mediaType: 'image/jpeg' }
+          }
+        }
+      }
+      // If no components (e.g. YCloud doesn't provide them), use the message text or template name
+      const fallbackText = message.text?.body || templateText || tmpl?.name || null
+      return { ...empty, contentText: fallbackText }
+    }
+
+    case 'unsupported':
+    case 'unknown':
+      // YCloud uses 'unsupported' for messages it can't represent (often template echoes).
+      // Try to extract whatever text is available.
+      return { ...empty, contentText: message.text?.body || null }
 
     default:
       return {
