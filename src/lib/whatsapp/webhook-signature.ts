@@ -13,14 +13,25 @@ export function verifyMetaWebhookSignature(
   const metaSecret = process.env.META_APP_SECRET
   const ycloudSecret = process.env.YCLOUD_WEBHOOK_SECRET
 
-  const secrets = [metaSecret, ycloudSecret].filter(Boolean) as string[]
+  const rawSecrets = [metaSecret, ycloudSecret].filter(Boolean) as string[]
 
-  if (secrets.length === 0) {
+  if (rawSecrets.length === 0) {
     return true
   }
 
   if (!signatureHeader) {
     return false
+  }
+
+  // Expand secret variants (e.g. whsec_ prefix stripped or included)
+  const secrets: string[] = []
+  for (const s of rawSecrets) {
+    secrets.push(s)
+    if (s.startsWith('whsec_')) {
+      secrets.push(s.slice(6))
+    } else {
+      secrets.push(`whsec_${s}`)
+    }
   }
 
   let timestamp = ''
@@ -37,28 +48,26 @@ export function verifyMetaWebhookSignature(
     if (v1Part) rawSig = v1Part.trim().replace('v1=', '')
     if (tPart) timestamp = tPart.trim().replace('t=', '')
   } else {
-    // If signatureHeader has an invalid prefix (e.g. sha512= or plain hex without prefix)
     return false
   }
 
-  if (!rawSig || rawSig.length !== 64) {
-    return false
+  if (!rawSig || (rawSig.length !== 64 && !isMetaFormat)) {
+    // Standard HMAC-SHA256 hex signatures are 64 characters
+    if (rawSig.length !== 64) return false
   }
 
   for (const secret of secrets) {
-    // 1. Direct rawBody HMAC (Meta style)
-    if (isMetaFormat) {
-      const expectedMetaHex = crypto.createHmac('sha256', secret).update(rawBody).digest('hex')
-      if (rawSig === expectedMetaHex) {
-        return true
-      }
+    // 1. Direct rawBody HMAC (Meta / YCloud direct)
+    const expectedMetaHex = crypto.createHmac('sha256', secret).update(rawBody).digest('hex')
+    if (rawSig.toLowerCase() === expectedMetaHex.toLowerCase()) {
+      return true
     }
 
     // 2. Timestamp + rawBody HMAC (YCloud style: "${timestamp}.${rawBody}")
     if (timestamp) {
       const payloadToSign = `${timestamp}.${rawBody}`
       const expectedYCloudHex = crypto.createHmac('sha256', secret).update(payloadToSign).digest('hex')
-      if (rawSig === expectedYCloudHex) {
+      if (rawSig.toLowerCase() === expectedYCloudHex.toLowerCase()) {
         return true
       }
     }
