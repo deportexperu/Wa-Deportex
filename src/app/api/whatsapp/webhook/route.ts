@@ -1131,12 +1131,13 @@ async function processOutboundAppMessage(
     return
   }
 
-  // 6. Update conversation preview
+  // 6. Update conversation preview and reset unread count
   await supabaseAdmin()
     .from('conversations')
     .update({
       last_message_text: contentText || `[${message.type}]`,
       last_message_at: new Date().toISOString(),
+      unread_count: 0,
       updated_at: new Date().toISOString(),
     })
     .eq('id', conversation.id)

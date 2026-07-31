@@ -19,9 +19,9 @@ describe('buildConversationContext', () => {
   it('maps sender_type to role and returns chronological order', async () => {
     // DB returns newest-first (created_at DESC); the fn reverses it.
     const rows = [
-      { sender_type: 'customer', content_text: 'third' },
-      { sender_type: 'agent', content_text: 'second' },
-      { sender_type: 'customer', content_text: 'first' },
+      { sender_type: 'customer', content_type: 'text', content_text: 'third' },
+      { sender_type: 'agent', content_type: 'text', content_text: 'second' },
+      { sender_type: 'customer', content_type: 'text', content_text: 'first' },
     ]
     const out = await buildConversationContext(fakeDb(rows), 'conv-1')
     expect(out).toEqual([
@@ -31,20 +31,42 @@ describe('buildConversationContext', () => {
     ])
   })
 
-  it('treats bot messages as assistant', async () => {
-    const out = await buildConversationContext(
-      fakeDb([{ sender_type: 'bot', content_text: 'auto reply' }]),
-      'conv-1',
-    )
-    expect(out).toEqual([{ role: 'assistant', content: 'auto reply' }])
-  })
-
-  it('drops empty / whitespace-only messages', async () => {
+  it('treats bot and agent messages as assistant', async () => {
     const out = await buildConversationContext(
       fakeDb([
-        { sender_type: 'customer', content_text: '   ' },
-        { sender_type: 'customer', content_text: null },
-        { sender_type: 'customer', content_text: 'real' },
+        { sender_type: 'agent', content_type: 'text', content_text: 'Si tenemos telas' },
+        { sender_type: 'bot', content_type: 'text', content_text: 'auto reply' },
+      ]),
+      'conv-1',
+    )
+    expect(out).toEqual([
+      { role: 'assistant', content: 'auto reply' },
+      { role: 'assistant', content: 'Si tenemos telas' },
+    ])
+  })
+
+  it('formats multimedia messages with descriptive tags', async () => {
+    const rows = [
+      { sender_type: 'customer', content_type: 'image', content_text: 'Tienes esta tela?' },
+      { sender_type: 'agent', content_type: 'image', content_text: null },
+      { sender_type: 'customer', content_type: 'audio', content_text: null },
+      { sender_type: 'agent', content_type: 'document', content_text: 'catalogo.pdf' },
+    ]
+    const out = await buildConversationContext(fakeDb(rows), 'conv-1')
+    expect(out).toEqual([
+      { role: 'assistant', content: '[Documento: catalogo.pdf]' },
+      { role: 'user', content: '[Audio / Mensaje de voz]' },
+      { role: 'assistant', content: '[Imagen]' },
+      { role: 'user', content: '[Imagen: Tienes esta tela?]' },
+    ])
+  })
+
+  it('drops empty / whitespace-only text messages with no type label', async () => {
+    const out = await buildConversationContext(
+      fakeDb([
+        { sender_type: 'customer', content_type: 'text', content_text: '   ' },
+        { sender_type: 'customer', content_type: 'text', content_text: null },
+        { sender_type: 'customer', content_type: 'text', content_text: 'real' },
       ]),
       'conv-1',
     )
