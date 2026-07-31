@@ -48,7 +48,11 @@ export interface VerifyPhoneNumberArgs {
 }
 
 function isYCloudToken(token: string): boolean {
-  return Boolean(token && (!token.startsWith('EAA') || token.startsWith('668fc') || token.startsWith('whsec_')))
+  if (!token) return false
+  return Boolean(
+    token.startsWith('whsec_') ||
+    (token.length === 32 && /^[0-9a-fA-F]+$/.test(token))
+  )
 }
 
 /**
