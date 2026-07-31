@@ -1,7 +1,6 @@
 import { NextResponse, after } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
-import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { normalizePhone } from '@/lib/whatsapp/phone-utils'
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
@@ -80,7 +79,7 @@ interface WhatsAppMessage {
   context?: { id: string }
 }
 
-interface WhatsAppWebhookEntry {
+export interface WhatsAppWebhookEntry {
   id: string
   changes: Array<{
     value: {
@@ -201,6 +200,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let body: any
   try {
     body = JSON.parse(rawBody)
@@ -225,7 +225,7 @@ export async function POST(request: Request) {
   return NextResponse.json({ status: 'received' }, { status: 200 })
 }
 
-function safeIsoTimestamp(ts: any): string {
+function safeIsoTimestamp(ts: unknown): string {
   if (!ts) return new Date().toISOString()
   if (typeof ts === 'string' && (ts.includes('T') || ts.includes('-'))) {
     const d = new Date(ts)
@@ -240,6 +240,7 @@ function safeIsoTimestamp(ts: any): string {
   return new Date().toISOString()
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function processWebhook(body: any) {
   if (!body) return
 
@@ -337,11 +338,11 @@ async function processWebhook(body: any) {
         ? (() => {
             const tmpl = ycloudMsg.template || {}
             const bodyComp = Array.isArray(tmpl.components)
-              ? tmpl.components.find((c: any) => c.type?.toLowerCase() === 'body')
+              ? tmpl.components.find((c: Record<string, unknown>) => String(c.type)?.toLowerCase() === 'body')
               : null
             return bodyComp?.text ||
               (Array.isArray(bodyComp?.parameters)
-                ? bodyComp.parameters.map((p: any) => p.text || '').filter(Boolean).join(' ')
+                ? bodyComp.parameters.map((p: Record<string, unknown>) => String(p.text || '')).filter(Boolean).join(' ')
                 : null) ||
               tmpl.name || ycloudMsg.templateName || null
           })()
@@ -465,12 +466,13 @@ async function processWebhook(body: any) {
         const cleanMsgFrom = (message.from || '').replace(/\D/g, '')
 
         // Robust candidate extraction for recipient phone number
+        const msgRecord = message as unknown as Record<string, unknown>
         const recipientCandidate =
           value.contacts?.[i]?.wa_id ||
           value.contacts?.[0]?.wa_id ||
-          (message as any).recipient_id ||
+          (msgRecord.recipient_id as string) ||
           message.to ||
-          (message as any).destination ||
+          (msgRecord.destination as string) ||
           value.statuses?.[i]?.recipient_id ||
           value.statuses?.[0]?.recipient_id
 
@@ -1130,7 +1132,7 @@ async function processOutboundAppMessage(
 
 async function parseMessageContent(
   message: WhatsAppMessage,
-  accessToken: string
+  _accessToken?: string
 ): Promise<{
   contentText: string | null
   mediaUrl: string | null
@@ -1264,10 +1266,10 @@ async function parseMessageContent(
         if (bodyComp?.text) {
           templateText = bodyComp.text
         } else if (bodyComp?.parameters) {
-          templateText = bodyComp.parameters.map((p: any) => p.text || '').filter(Boolean).join(' ')
+          templateText = bodyComp.parameters.map((p: Record<string, unknown>) => String(p.text || '')).filter(Boolean).join(' ')
         }
         if (headerComp?.parameters) {
-          const imgParam = headerComp.parameters.find((p: any) => p.type === 'image' && (p.image?.link || p.image?.id))
+          const imgParam = headerComp.parameters.find((p: Record<string, unknown>) => p.type === 'image' && (p.image?.link || p.image?.id))
           if (imgParam?.image) {
             const imgRef = imgParam.image.link || imgParam.image.id
             const mediaObj = { link: imgRef, id: imgRef, url: imgRef }
