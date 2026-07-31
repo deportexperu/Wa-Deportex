@@ -266,6 +266,9 @@ export interface MessageReaction {
   created_at: string;
 }
 
+export type ConnectionType = 'meta_cloud' | 'qr_code';
+export type QrSessionStatus = 'disconnected' | 'connecting' | 'connected';
+
 export interface WhatsAppConfig {
   id: string;
   user_id: string;
@@ -274,6 +277,11 @@ export interface WhatsAppConfig {
   access_token: string;
   verify_token?: string;
   status: 'connected' | 'disconnected';
+  connection_type?: ConnectionType;
+  qr_code_data?: string;
+  session_status?: QrSessionStatus;
+  gateway_url?: string;
+  instance_name?: string;
   connected_at?: string;
   /**
    * Set when POST /{phone_number_id}/register last succeeded. NULL

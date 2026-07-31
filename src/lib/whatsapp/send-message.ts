@@ -44,6 +44,7 @@ import {
 } from '@/lib/whatsapp/phone-utils';
 import type { MessageTemplate } from '@/types';
 import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard';
+import { sendQrMessage } from '@/lib/whatsapp/qr-gateway';
 
 export const MEDIA_KINDS = ['image', 'video', 'document', 'audio'] as const;
 export const VALID_MESSAGE_TYPES = [
@@ -330,6 +331,25 @@ export async function sendMessageToConversation(
   }
 
   const attempt = async (phone: string): Promise<string> => {
+    if (config.connection_type === 'qr_code') {
+      const instanceName = config.instance_name || `acc_${accountId.slice(0, 8)}`;
+      const qrRes = await sendQrMessage(
+        instanceName,
+        {
+          to: phone,
+          text: contentText || undefined,
+          mediaUrl: mediaUrl || undefined,
+          mediaType: isMediaKind ? (messageType as 'image' | 'video' | 'document' | 'audio') : undefined,
+          caption: contentText || undefined,
+        },
+        config.gateway_url
+      );
+      if (!qrRes.success) {
+        throw new SendMessageError('qr_send_error', qrRes.error || 'Failed to send QR message', 500);
+      }
+      return qrRes.messageId || `qr_${Date.now()}`;
+    }
+
     if (messageType === 'template') {
       const result = await sendTemplateMessage({
         phoneNumberId: config.phone_number_id,
