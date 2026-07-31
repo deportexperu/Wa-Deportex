@@ -90,30 +90,28 @@ export async function POST() {
     let syncedMessagesCount = 0
     let syncedContactsCount = 0
 
-    // Check if token is YCloud API Key
-    const isYCloud = accessToken.startsWith('whsec_') || (accessToken.length === 32 && /^[0-9a-fA-F]+$/.test(accessToken))
+    // Try fetching from YCloud API directly
+    try {
+      const ycloudRes = await fetch('https://api.ycloud.com/v1/whatsapp/messages?page=1&limit=100', {
+        headers: {
+          'X-API-Key': accessToken,
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      })
 
-    if (isYCloud) {
-      try {
-        const ycloudRes = await fetch('https://api.ycloud.com/v1/whatsapp/messages?limit=100', {
-          headers: {
-            'X-API-Key': accessToken,
-            'Content-Type': 'application/json',
-          },
-        })
+      if (ycloudRes.ok) {
+        const data = await ycloudRes.json()
+        const items = Array.isArray(data.items) ? data.items : (Array.isArray(data.data) ? data.data : [])
 
-        if (ycloudRes.ok) {
-          const data = await ycloudRes.json()
-          const items = Array.isArray(data.items) ? data.items : (Array.isArray(data.data) ? data.data : [])
+        for (const item of items) {
+          const rawFrom = item.from || item.sender || item.customer?.phone || ''
+          const rawTo = item.to || item.recipient || item.destination || ''
+          const cleanFrom = normalizePhone(rawFrom)
+          const cleanTo = normalizePhone(rawTo)
+          const msgId = item.id || `sync_${Date.now()}`
 
-          for (const item of items) {
-            const rawFrom = item.from || item.sender || ''
-            const rawTo = item.to || item.recipient || item.destination || ''
-            const cleanFrom = normalizePhone(rawFrom)
-            const cleanTo = normalizePhone(rawTo)
-            const msgId = item.id || `sync_${Date.now()}`
-
-            if (!cleanFrom && !cleanTo) continue
+          if (!cleanFrom && !cleanTo) continue
 
             // Determine direction
             const isOutbound =
@@ -201,7 +199,6 @@ export async function POST() {
       } catch (err) {
         console.error('[whatsapp/sync] YCloud sync error:', err)
       }
-    }
 
     return NextResponse.json({
       success: true,
