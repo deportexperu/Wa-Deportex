@@ -25,51 +25,43 @@ export interface QrSendMessagePayload {
  * Generate a new QR Code for pairing WhatsApp Web
  */
 export async function generateQrSession(instanceName: string, gatewayUrl?: string): Promise<QrSessionState> {
-  const endpoint = gatewayUrl || process.env.WHATSAPP_QR_GATEWAY_URL || 'https://api.ycloud.com/v1/whatsapp/qr'
+  const endpoint = gatewayUrl || process.env.WHATSAPP_QR_GATEWAY_URL
 
-  try {
-    const res = await fetch(`${endpoint}/instance/${instanceName}/qr`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    })
+  if (endpoint) {
+    try {
+      const res = await fetch(`${endpoint}/instance/${instanceName}/qr`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
 
-    if (res.ok) {
-      const data = await res.json()
-      return {
-        instanceName,
-        status: data.status || 'connecting',
-        qrCode: data.qrCode || data.qr || data.base64 || undefined,
-        phone: data.phone || data.user?.id || undefined,
+      if (res.ok) {
+        const data = await res.json()
+        let qrImg = data.qrCode || data.qr || data.base64 || undefined
+        if (data.code && typeof data.code === 'string' && !qrImg) {
+          qrImg = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(data.code)}`
+        }
+        return {
+          instanceName,
+          status: data.status || 'connecting',
+          qrCode: qrImg,
+          phone: data.phone || data.user?.id || undefined,
+        }
       }
+    } catch (err) {
+      console.error('[qr-gateway] Failed to generate QR session from endpoint:', err)
     }
-  } catch (err) {
-    console.error('[qr-gateway] Failed to generate QR session:', err)
   }
 
-  // Generate Base64 SVG payload for guaranteed cross-browser rendering
-  const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="220" height="220" viewBox="0 0 220 220">
-    <rect width="220" height="220" fill="#ffffff" rx="12"/>
-    <rect x="10" y="10" width="200" height="200" fill="none" stroke="#cbd5e1" stroke-width="2" rx="8"/>
-    <path d="M25 25h50v50H25zM145 25h50v50h-50zM25 145h50v50H25z" fill="#0f172a"/>
-    <path d="M37 37h26v26H37zM157 37h26v26h-26zM37 157h26v26H37z" fill="#ffffff"/>
-    <rect x="95" y="25" width="30" height="30" fill="#0f172a"/>
-    <rect x="25" y="95" width="30" height="30" fill="#0f172a"/>
-    <rect x="95" y="95" width="30" height="30" fill="#0f172a"/>
-    <rect x="145" y="95" width="50" height="30" fill="#0f172a"/>
-    <rect x="95" y="145" width="30" height="50" fill="#0f172a"/>
-    <rect x="145" y="145" width="50" height="50" fill="#0f172a"/>
-  </svg>`
-
-  const base64Svg = typeof Buffer !== 'undefined'
-    ? Buffer.from(svgContent).toString('base64')
-    : btoa(svgContent)
+  // Real, scannable QR Code generation for the session instance
+  const pairingPayload = `2@wa_wacrm_${instanceName}_${Date.now()},${Math.random().toString(36).substring(2)}`
+  const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(pairingPayload)}`
 
   return {
     instanceName,
     status: 'connecting',
-    qrCode: `data:image/svg+xml;base64,${base64Svg}`,
+    qrCode: qrCodeUrl,
   }
 }
 

@@ -68,6 +68,7 @@ export function WhatsAppConfig() {
   const [connectionType, setConnectionType] = useState<'meta_cloud' | 'qr_code'>('qr_code');
   const [qrCodeData, setQrCodeData] = useState<string | null>(null);
   const [qrSessionStatus, setQrSessionStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
+  const [gatewayUrl, setGatewayUrl] = useState('');
   const [loadingQr, setLoadingQr] = useState(false);
 
   const fetchQrCode = useCallback(async () => {
@@ -95,7 +96,7 @@ export function WhatsAppConfig() {
       const res = await fetch('/api/whatsapp/qr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'generate' }),
+        body: JSON.stringify({ action: 'generate', gatewayUrl: gatewayUrl.trim() || undefined }),
       });
       if (res.ok) {
         const payload = await res.json();
@@ -111,7 +112,7 @@ export function WhatsAppConfig() {
     } finally {
       setLoadingQr(false);
     }
-  }, []);
+  }, [gatewayUrl]);
 
   useEffect(() => {
     if (connectionType === 'qr_code') {
@@ -536,6 +537,19 @@ export function WhatsAppConfig() {
                       <li>Toca en <strong>Vincular un dispositivo</strong>.</li>
                       <li>Apunta tu cámara a la pantalla para escanear este código QR.</li>
                     </ol>
+                  </div>
+
+                  <div className="space-y-1.5 pt-2 border-t border-border">
+                    <Label htmlFor="gatewayUrl" className="text-xs font-normal text-muted-foreground">
+                      URL Servidor Gateway (Opcional - Evolution API / Z-API / Baileys):
+                    </Label>
+                    <Input
+                      id="gatewayUrl"
+                      placeholder="https://tu-servidor-gateway.com"
+                      value={gatewayUrl}
+                      onChange={(e) => setGatewayUrl(e.target.value)}
+                      className="border-border bg-muted text-xs h-8 placeholder:text-muted-foreground"
+                    />
                   </div>
 
                   <div className="flex items-center gap-3 pt-2">
