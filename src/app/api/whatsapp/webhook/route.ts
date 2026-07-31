@@ -1269,9 +1269,11 @@ async function parseMessageContent(
           templateText = bodyComp.parameters.map((p: Record<string, unknown>) => String(p.text || '')).filter(Boolean).join(' ')
         }
         if (headerComp?.parameters) {
-          const imgParam = headerComp.parameters.find((p: Record<string, unknown>) => p.type === 'image' && (p.image?.link || p.image?.id))
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const params = headerComp.parameters as any[]
+          const imgParam = params.find((p) => p.type === 'image' && (p.image?.link || p.image?.id))
           if (imgParam?.image) {
-            const imgRef = imgParam.image.link || imgParam.image.id
+            const imgRef = (imgParam.image.link || imgParam.image.id) as string
             const mediaObj = { link: imgRef, id: imgRef, url: imgRef }
             return { ...empty, contentText: templateText || tmpl.name || null, mediaUrl: buildProxyUrl(mediaObj), mediaType: 'image/jpeg' }
           }
