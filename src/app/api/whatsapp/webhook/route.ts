@@ -493,20 +493,29 @@ async function processWebhook(body: any) {
           value.statuses?.[i]?.recipient_id ||
           value.statuses?.[0]?.recipient_id
 
-        // Detect outbound-from-app: sender matches business number OR sender != contacts.wa_id
-        const isOutboundFromApp =
-          Boolean(cleanMsgFrom) &&
-          (
-            (displayPhone && (cleanMsgFrom === displayPhone || cleanMsgFrom.endsWith(displayPhone) || displayPhone.endsWith(cleanMsgFrom))) ||
-            (Boolean(recipientCandidate) && recipientCandidate !== cleanMsgFrom && (
-              !value.contacts || value.contacts.length === 0 || value.contacts[0].wa_id !== cleanMsgFrom
-            ))
-          )
+        // Rule for outbound messages sent from WhatsApp Web / WhatsApp Business Mobile App:
+        // On inbound messages from customers: value.contacts IS present AND value.contacts[0].wa_id === message.from.
+        // On outbound messages from business: value.contacts IS missing OR value.contacts[0].wa_id !== message.from.
+        const isCustomerInbound = Boolean(
+          value.contacts &&
+          value.contacts.length > 0 &&
+          value.contacts[0].wa_id &&
+          normalizePhone(value.contacts[0].wa_id) === cleanMsgFrom &&
+          cleanMsgFrom !== displayPhone
+        )
+
+        const isOutboundFromApp = !isCustomerInbound
 
         if (isOutboundFromApp) {
-          const recipientPhone = normalizePhone(recipientCandidate || '') || (
-            normalizePhone(message.to || (msgRecord.recipient_id as string) || '')
-          )
+          let recipientPhone = normalizePhone(recipientCandidate || '')
+          if (!recipientPhone || recipientPhone === cleanMsgFrom) {
+            recipientPhone = normalizePhone(message.to || (msgRecord.recipient_id as string) || '')
+          }
+          if (!recipientPhone || recipientPhone === cleanMsgFrom) {
+            // Fallback: look up the most recently active conversation in this account
+            const latestPhone = await resolveLatestActiveContactPhone(config.account_id)
+            if (latestPhone) recipientPhone = latestPhone
+          }
 
           if (recipientPhone && recipientPhone !== cleanMsgFrom) {
             await processOutboundAppMessage(
@@ -535,6 +544,29 @@ async function processWebhook(body: any) {
         )
       }
     }
+  }
+}
+
+/**
+ * Helper to resolve the contact phone number from the account's most recent conversation.
+ * Used as a fallback when an outbound app/web message webhook arrives without an explicit recipient_id.
+ */
+async function resolveLatestActiveContactPhone(accountId: string): Promise<string | null> {
+  try {
+    const { data: convs, error } = await supabaseAdmin()
+      .from('conversations')
+      .select('contacts(phone)')
+      .eq('account_id', accountId)
+      .order('last_message_at', { ascending: false })
+      .limit(1)
+
+    if (error || !convs || convs.length === 0) return null
+
+    const contactObj = convs[0].contacts as { phone: string } | null
+    return contactObj?.phone ? normalizePhone(contactObj.phone) : null
+  } catch (err) {
+    console.error('[webhook] resolveLatestActiveContactPhone failed:', err)
+    return null
   }
 }
 
