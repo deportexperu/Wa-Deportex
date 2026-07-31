@@ -288,8 +288,7 @@ async function processWebhook(body: any) {
 
       const cleanFrom = normalizePhone(fromPhone)
       const cleanTo = normalizePhone(toPhone)
-      const displayPhone = (config.phone_number_id || '').replace(/\D/g, '')
-      const wabaPhone = (config.waba_id || '').replace(/\D/g, '')
+      const displayPhone = (body.metadata?.display_phone_number || ycloudMsg.metadata?.display_phone_number || config.phone_number_id || '').replace(/\D/g, '')
 
       // Determine if payload contains actual message content (text or media)
       const hasMessageContent = Boolean(
@@ -315,14 +314,18 @@ async function processWebhook(body: any) {
         return
       }
 
-      // Direction detection: explicit YCloud event types override heuristics
+      // Direction detection: explicit YCloud event types + sender check
       const isOutbound =
-        Boolean(body.type?.includes('outbound') || body.type?.endsWith('.sent')) ||
+        Boolean(body.whatsappOutboundMessage) ||
+        Boolean(body.type?.includes('outbound')) ||
+        Boolean(body.type?.endsWith('.sent')) ||
+        Boolean(ycloudMsg.direction === 'outbound' || body.direction === 'outbound') ||
         (!body.type?.includes('inbound') &&
           Boolean(
-            cleanFrom && (
+            cleanFrom && cleanTo && cleanFrom !== cleanTo &&
+            (
               (displayPhone && (cleanFrom === displayPhone || cleanFrom.endsWith(displayPhone) || displayPhone.endsWith(cleanFrom))) ||
-              (wabaPhone && (cleanFrom === wabaPhone || cleanFrom.endsWith(wabaPhone) || wabaPhone.endsWith(cleanFrom)))
+              (cleanTo !== cleanFrom && !body.type?.includes('inbound'))
             )
           )
         )
@@ -482,35 +485,46 @@ async function processWebhook(body: any) {
         // Robust candidate extraction for recipient phone number
         const msgRecord = message as unknown as Record<string, unknown>
         const recipientCandidate =
-          value.contacts?.[i]?.wa_id ||
-          value.contacts?.[0]?.wa_id ||
           (msgRecord.recipient_id as string) ||
           message.to ||
           (msgRecord.destination as string) ||
+          value.contacts?.[i]?.wa_id ||
+          value.contacts?.[0]?.wa_id ||
           value.statuses?.[i]?.recipient_id ||
           value.statuses?.[0]?.recipient_id
 
-        // Detect outbound-from-app: sender matches business number OR message contains a recipient_id
+        // Detect outbound-from-app: sender matches business number OR sender != contacts.wa_id
         const isOutboundFromApp =
           Boolean(cleanMsgFrom) &&
-          ((displayPhone && (cleanMsgFrom === displayPhone || cleanMsgFrom.endsWith(displayPhone) || displayPhone.endsWith(cleanMsgFrom))) ||
-           (cleanPhoneId && (cleanMsgFrom === cleanPhoneId || cleanMsgFrom.endsWith(cleanPhoneId) || cleanPhoneId.endsWith(cleanMsgFrom))))
-
-        if (isOutboundFromApp && recipientCandidate) {
-          const recipientPhone = normalizePhone(recipientCandidate)
-          await processOutboundAppMessage(
-            message,
-            { profile: { name: value.contacts?.[i]?.profile?.name || '' }, wa_id: recipientPhone },
-            config.account_id,
-            config.user_id,
-            decryptedAccessToken
+          (
+            (displayPhone && (cleanMsgFrom === displayPhone || cleanMsgFrom.endsWith(displayPhone) || displayPhone.endsWith(cleanMsgFrom))) ||
+            (Boolean(recipientCandidate) && recipientCandidate !== cleanMsgFrom && (
+              !value.contacts || value.contacts.length === 0 || value.contacts[0].wa_id !== cleanMsgFrom
+            ))
           )
-          continue
+
+        if (isOutboundFromApp) {
+          const recipientPhone = normalizePhone(recipientCandidate || '') || (
+            normalizePhone(message.to || (msgRecord.recipient_id as string) || '')
+          )
+
+          if (recipientPhone && recipientPhone !== cleanMsgFrom) {
+            await processOutboundAppMessage(
+              message,
+              { profile: { name: value.contacts?.[i]?.profile?.name || '' }, wa_id: recipientPhone },
+              config.account_id,
+              config.user_id,
+              decryptedAccessToken
+            )
+            continue
+          }
         }
 
         // Regular inbound message from a customer.
-        if (!value.contacts) continue
-        const contact = value.contacts[i] || value.contacts[0]
+        const contact = value.contacts?.[i] || value.contacts?.[0] || {
+          profile: { name: cleanMsgFrom || 'WhatsApp User' },
+          wa_id: cleanMsgFrom,
+        }
 
         await processMessage(
           message,
