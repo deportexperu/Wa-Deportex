@@ -13,8 +13,6 @@ import {
   Zap,
   AlertTriangle,
   RotateCcw,
-  QrCode,
-  Smartphone,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
@@ -64,83 +62,6 @@ export function WhatsAppConfig() {
   // tab regains focus. Without this, that churn calls fetchConfig()
   // again and overwrites whatever the user typed but hadn't saved yet.
   const loadedAccountIdRef = useRef<string | null>(null);
-
-  const [connectionType, setConnectionType] = useState<'meta_cloud' | 'qr_code'>('qr_code');
-  const [qrCodeData, setQrCodeData] = useState<string | null>(null);
-  const [qrSessionStatus, setQrSessionStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
-  const [gatewayUrl, setGatewayUrl] = useState('');
-  const [loadingQr, setLoadingQr] = useState(false);
-
-  const fetchQrCode = useCallback(async () => {
-    setLoadingQr(true);
-    try {
-      const res = await fetch('/api/whatsapp/qr', { method: 'GET' });
-      if (res.ok) {
-        const payload = await res.json();
-        setQrCodeData(payload.qrCodeData || null);
-        setQrSessionStatus(payload.sessionStatus || 'disconnected');
-        if (payload.connected) {
-          setConnectionStatus('connected');
-        }
-      }
-    } catch (err) {
-      console.error('Error fetching QR code:', err);
-    } finally {
-      setLoadingQr(false);
-    }
-  }, []);
-
-  const handleGenerateQr = useCallback(async () => {
-    setLoadingQr(true);
-    try {
-      const res = await fetch('/api/whatsapp/qr', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'generate', gatewayUrl: gatewayUrl.trim() || undefined }),
-      });
-      if (res.ok) {
-        const payload = await res.json();
-        setQrCodeData(payload.qrCodeData || null);
-        setQrSessionStatus(payload.sessionStatus || 'connecting');
-        toast.success('Código QR generado. Escanéalo con WhatsApp.');
-      } else {
-        toast.error('Error al generar el Código QR.');
-      }
-    } catch (err) {
-      console.error('Error generating QR code:', err);
-      toast.error('Error de red al generar el Código QR.');
-    } finally {
-      setLoadingQr(false);
-    }
-  }, [gatewayUrl]);
-
-  useEffect(() => {
-    if (connectionType === 'qr_code') {
-      fetchQrCode();
-    }
-  }, [connectionType, fetchQrCode]);
-
-  const handleDisconnectQr = useCallback(async () => {
-    setLoadingQr(true);
-    try {
-      const res = await fetch('/api/whatsapp/qr', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'disconnect' }),
-      });
-      if (res.ok) {
-        toast.success('Dispositivo desvinculado correctamente.');
-        setQrCodeData(null);
-        setQrSessionStatus('disconnected');
-        setConnectionStatus('disconnected');
-      }
-    } catch (err) {
-      console.error('Error disconnecting QR:', err);
-      toast.error('Error al desvincular el dispositivo.');
-    } finally {
-      setLoadingQr(false);
-    }
-  }, []);
 
   const [phoneNumberId, setPhoneNumberId] = useState('');
   const [wabaId, setWabaId] = useState('');
@@ -475,99 +396,6 @@ export function WhatsAppConfig() {
       <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
       {/* Main config form */}
       <div className="space-y-6">
-        {/* Method selector */}
-        <div className="flex flex-wrap items-center gap-2 border-b border-border pb-4">
-          <Button
-            type="button"
-            variant={connectionType === 'qr_code' ? 'default' : 'outline'}
-            onClick={() => setConnectionType('qr_code')}
-            className="gap-2"
-          >
-            <QrCode className="size-4" />
-            Código QR (Recomendado - WhatsApp Web)
-          </Button>
-          <Button
-            type="button"
-            variant={connectionType === 'meta_cloud' ? 'default' : 'outline'}
-            onClick={() => setConnectionType('meta_cloud')}
-            className="gap-2"
-          >
-            <Zap className="size-4" />
-            API Cloud Oficial (Meta / YCloud WABA)
-          </Button>
-        </div>
-
-        {connectionType === 'qr_code' && (
-          <Card className="border-border bg-card">
-            <CardHeader>
-              <CardTitle className="text-lg font-semibold flex items-center gap-2">
-                <QrCode className="size-5 text-primary" />
-                Vincular WhatsApp mediante Código QR
-              </CardTitle>
-              <CardDescription>
-                Escanea el código QR desde tu celular para vincular tu WhatsApp Web y sincronizar el 100% de contactos y mensajes salientes en tiempo real.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="flex flex-col md:flex-row items-center gap-6 p-4 rounded-lg bg-muted/40 border border-border">
-                <div className="flex flex-col items-center justify-center min-w-[240px] min-h-[240px] w-60 h-60 shrink-0 p-4 bg-white rounded-xl shadow-md border border-slate-200">
-                  {loadingQr ? (
-                    <div className="flex flex-col items-center justify-center h-48 w-48 text-slate-500 gap-2">
-                      <Loader2 className="size-8 animate-spin text-primary" />
-                      <span className="text-xs">Generando código QR...</span>
-                    </div>
-                  ) : qrCodeData ? (
-                    <img src={qrCodeData} alt="Código QR WhatsApp" className="h-48 w-48 object-contain" />
-                  ) : (
-                    <div className="flex flex-col items-center justify-center h-48 w-48 text-slate-500 gap-2 text-center p-4">
-                      <Smartphone className="size-10 text-slate-400" />
-                      <span className="text-xs font-medium">Haz clic en Generar QR para vincular</span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex-1 space-y-4 text-sm text-foreground">
-                  <div className="space-y-2">
-                    <h4 className="font-semibold text-base flex items-center gap-2">
-                      Pasos para conectar:
-                    </h4>
-                    <ol className="list-decimal list-inside space-y-1.5 text-muted-foreground text-sm">
-                      <li>Abre <strong>WhatsApp</strong> en tu teléfono móvil.</li>
-                      <li>Ve a <strong>Ajustes / Menú (⋮)</strong> &gt; <strong>Dispositivos vinculados</strong>.</li>
-                      <li>Toca en <strong>Vincular un dispositivo</strong>.</li>
-                      <li>Apunta tu cámara a la pantalla para escanear este código QR.</li>
-                    </ol>
-                  </div>
-
-                  <div className="space-y-1.5 pt-2 border-t border-border">
-                    <Label htmlFor="gatewayUrl" className="text-xs font-normal text-muted-foreground">
-                      URL Servidor Gateway (Opcional - Evolution API / Z-API / Baileys):
-                    </Label>
-                    <Input
-                      id="gatewayUrl"
-                      placeholder="https://tu-servidor-gateway.com"
-                      value={gatewayUrl}
-                      onChange={(e) => setGatewayUrl(e.target.value)}
-                      className="border-border bg-muted text-xs h-8 placeholder:text-muted-foreground"
-                    />
-                  </div>
-
-                  <div className="flex items-center gap-3 pt-2">
-                    <Button onClick={handleGenerateQr} disabled={loadingQr} className="gap-2">
-                      {loadingQr ? <Loader2 className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
-                      Generar / Actualizar Código QR
-                    </Button>
-                    {qrSessionStatus === 'connected' && (
-                      <Button variant="destructive" onClick={handleDisconnectQr} disabled={loadingQr} className="gap-2">
-                        Desvincular Dispositivo
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
         {/* Corrupted-token reset banner */}
         {showResetBanner && (
           <Alert className="bg-amber-950/40 border-amber-600/40">
