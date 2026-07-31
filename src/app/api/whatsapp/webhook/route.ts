@@ -197,6 +197,12 @@ export async function POST(request: Request) {
 
   after(async () => {
     try {
+      // Log full payload structure at debug level for diagnosing missed events
+      console.log('[webhook] incoming payload keys:', Object.keys(body || {}), 'type:', body?.type)
+      if (body?.whatsappMessage || body?.whatsappOutboundMessage || body?.whatsappInboundMessage) {
+        const msg = body.whatsappMessage || body.whatsappOutboundMessage || body.whatsappInboundMessage
+        console.log('[webhook] YCloud msg from:', msg?.from, 'to:', msg?.to, 'type:', msg?.type)
+      }
       await processWebhook(body)
     } catch (error) {
       console.error('Error processing webhook:', error)
@@ -225,8 +231,22 @@ async function processWebhook(body: any) {
   if (!body) return
 
   // 1. Support YCloud Native Payload Format
+  // YCloud event types:
+  //   whatsapp.inbound_message.received  -> body.whatsappInboundMessage
+  //   whatsapp.outbound_message.sent     -> body.whatsappMessage (outbound sent from WA app/web)
+  //   whatsapp.message.updated           -> body.whatsappMessage (status updates)
   const ycloudMsg = body.whatsappInboundMessage || body.whatsappOutboundMessage || body.whatsappMessage || body.message || body.data
-  if (ycloudMsg && (body.type?.includes('message') || body.type?.includes('inbound') || body.type?.includes('outbound') || ycloudMsg.from || ycloudMsg.to)) {
+
+  // Match any YCloud event type string (inbound/outbound/updated/sent) or any payload that has from/to fields
+  const isYCloudEvent = Boolean(
+    body.type?.startsWith('whatsapp.') ||
+    body.type?.includes('message') ||
+    body.type?.includes('inbound') ||
+    body.type?.includes('outbound') ||
+    (ycloudMsg && (ycloudMsg.from || ycloudMsg.to))
+  )
+
+  if (ycloudMsg && isYCloudEvent) {
     const { data: config } = await supabaseAdmin()
       .from('whatsapp_config')
       .select('*')
@@ -241,9 +261,26 @@ async function processWebhook(body: any) {
       const cleanTo = normalizePhone(toPhone)
       const displayPhone = (config.phone_number_id || '').replace(/\D/g, '')
 
+      // Explicitly detect YCloud outbound event types:
+      //   - whatsapp.outbound_message.sent (sent from business via API or WhatsApp Web/App)
+      //   - whatsapp.message.updated with status = 'sent'/'delivered'/'read' (status events — skip these)
+      const isStatusUpdateOnly = Boolean(
+        body.type === 'whatsapp.message.updated' &&
+        (ycloudMsg.status === 'sent' || ycloudMsg.status === 'delivered' || ycloudMsg.status === 'read' || ycloudMsg.status === 'failed') &&
+        !ycloudMsg.text?.body && !ycloudMsg.image && !ycloudMsg.video && !ycloudMsg.document && !ycloudMsg.audio
+      )
+
+      if (isStatusUpdateOnly) {
+        console.log('[webhook] YCloud status update event (skipping as message):', body.type, ycloudMsg.status)
+        return
+      }
+
       const isOutbound =
+        Boolean(body.type === 'whatsapp.outbound_message.sent') ||
         Boolean(body.type?.includes('outbound') || body.type?.includes('sent')) ||
         Boolean(cleanFrom && displayPhone && (cleanFrom === displayPhone || cleanFrom.endsWith(displayPhone) || displayPhone.endsWith(cleanFrom)))
+
+      console.log('[webhook] YCloud event:', body.type, '| from:', cleanFrom, '| to:', cleanTo, '| displayPhone:', displayPhone, '| isOutbound:', isOutbound)
 
       const mediaObj = ycloudMsg.image || ycloudMsg.video || ycloudMsg.document || ycloudMsg.audio || ycloudMsg.sticker
       const mediaIdOrUrl = mediaObj?.url || mediaObj?.link || mediaObj?.fileUrl || mediaObj?.id || null
@@ -274,7 +311,7 @@ async function processWebhook(body: any) {
           config.user_id,
           decryptedAccessToken
         )
-      } else {
+      } else if (cleanFrom) {
         const contact = {
           profile: { name: ycloudMsg.customer?.name || ycloudMsg.senderName || cleanFrom || 'WhatsApp User' },
           wa_id: cleanFrom,
@@ -286,6 +323,8 @@ async function processWebhook(body: any) {
           config.user_id,
           decryptedAccessToken
         )
+      } else {
+        console.warn('[webhook] YCloud event has no from/to — skipping:', body.type, JSON.stringify(ycloudMsg).slice(0, 200))
       }
     }
     return
