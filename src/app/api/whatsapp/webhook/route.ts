@@ -268,16 +268,25 @@ async function processWebhook(body: any) {
       .maybeSingle()
 
     if (config) {
-      const fromPhone = ycloudMsg.from || ycloudMsg.customer?.phone_number || ycloudMsg.sender || ''
+      const fromPhone =
+        ycloudMsg.from ||
+        ycloudMsg.sender ||
+        ycloudMsg.senderPhone ||
+        ycloudMsg.customer?.phone_number ||
+        ycloudMsg.customer?.phone ||
+        ycloudMsg.customer?.wa_id ||
+        body.from ||
+        ''
+
       const toPhone =
         ycloudMsg.to ||
         ycloudMsg.recipient ||
         ycloudMsg.recipient_id ||
         ycloudMsg.destination ||
+        ycloudMsg.receiver ||
         ycloudMsg.customer?.phone_number ||
         ycloudMsg.customer?.phone ||
         ycloudMsg.customer?.wa_id ||
-        ycloudMsg.receiver ||
         body.to ||
         ''
 
@@ -300,21 +309,25 @@ async function processWebhook(body: any) {
         ycloudMsg.interactive ||
         ycloudMsg.template ||
         ycloudMsg.templateName ||
-        ycloudMsg.caption
+        ycloudMsg.caption ||
+        (ycloudMsg.type && ycloudMsg.type !== 'status' && ycloudMsg.type !== 'whatsapp.message.updated' && ycloudMsg.type !== 'reaction')
       )
 
-      // Only skip as a pure status update if there is ZERO message content
+      // Only skip as a pure status update if there is ZERO message content AND status is sent/delivered/read/failed
       if (!hasMessageContent && (ycloudMsg.status === 'sent' || ycloudMsg.status === 'delivered' || ycloudMsg.status === 'read' || ycloudMsg.status === 'failed')) {
         console.log('[webhook] YCloud pure status update event (skipping message insert):', body.type, ycloudMsg.status)
         return
       }
 
+      // Direction detection: explicit YCloud event types override heuristics
       const isOutbound =
-        Boolean(body.type?.includes('outbound')) ||
-        Boolean(
-          cleanFrom && (
-            (displayPhone && (cleanFrom === displayPhone || cleanFrom.endsWith(displayPhone) || displayPhone.endsWith(cleanFrom))) ||
-            (wabaPhone && (cleanFrom === wabaPhone || cleanFrom.endsWith(wabaPhone) || wabaPhone.endsWith(cleanFrom)))
+        Boolean(body.type?.includes('outbound') || body.type?.endsWith('.sent')) ||
+        (!body.type?.includes('inbound') &&
+          Boolean(
+            cleanFrom && (
+              (displayPhone && (cleanFrom === displayPhone || cleanFrom.endsWith(displayPhone) || displayPhone.endsWith(cleanFrom))) ||
+              (wabaPhone && (cleanFrom === wabaPhone || cleanFrom.endsWith(wabaPhone) || wabaPhone.endsWith(cleanFrom)))
+            )
           )
         )
 
@@ -323,17 +336,15 @@ async function processWebhook(body: any) {
       const mediaObj = ycloudMsg.image || ycloudMsg.video || ycloudMsg.document || ycloudMsg.audio || ycloudMsg.sticker
       const mediaIdOrUrl = mediaObj?.url || mediaObj?.link || mediaObj?.fileUrl || mediaObj?.id || null
 
-      // YCloud sends template messages as type='unsupported' — remap to 'template'
       let msgType = ycloudMsg.type || (ycloudMsg.image ? 'image' : ycloudMsg.video ? 'video' : ycloudMsg.audio ? 'audio' : ycloudMsg.document ? 'document' : 'text')
       if (msgType === 'unsupported' || msgType === 'unknown') {
         if (ycloudMsg.template || ycloudMsg.templateName || ycloudMsg.template_name) {
           msgType = 'template'
         } else {
-          msgType = 'text' // fallback so it renders as text
+          msgType = 'text'
         }
       }
 
-      // Extract template body text from YCloud template components
       const templateBodyText = (ycloudMsg.template || ycloudMsg.templateName)
         ? (() => {
             const tmpl = ycloudMsg.template || {}
@@ -348,17 +359,19 @@ async function processWebhook(body: any) {
           })()
         : null
 
+      const messageText = typeof ycloudMsg.text === 'string'
+        ? { body: ycloudMsg.text }
+        : (ycloudMsg.text?.body
+          ? ycloudMsg.text
+          : { body: templateBodyText || ycloudMsg.body || '' })
+
       const message: WhatsAppMessage = {
         id: ycloudMsg.id || `yc_${Date.now()}`,
         from: cleanFrom,
         to: cleanTo,
         timestamp: safeIsoTimestamp(ycloudMsg.sendTime || ycloudMsg.timestamp || ycloudMsg.createTime || String(Math.floor(Date.now() / 1000))),
         type: msgType,
-        text: typeof ycloudMsg.text === 'string'
-          ? { body: ycloudMsg.text }
-          : (ycloudMsg.text?.body
-            ? ycloudMsg.text
-            : { body: templateBodyText || ycloudMsg.body || '' }),
+        text: messageText,
         image: ycloudMsg.image ? { id: mediaIdOrUrl, link: mediaIdOrUrl, url: mediaIdOrUrl, mime_type: ycloudMsg.image.mime_type || ycloudMsg.image.contentType, caption: ycloudMsg.image.caption } : undefined,
         video: ycloudMsg.video ? { id: mediaIdOrUrl, link: mediaIdOrUrl, url: mediaIdOrUrl, mime_type: ycloudMsg.video.mime_type || ycloudMsg.video.contentType, caption: ycloudMsg.video.caption } : undefined,
         document: ycloudMsg.document ? { id: mediaIdOrUrl, link: mediaIdOrUrl, url: mediaIdOrUrl, mime_type: ycloudMsg.document.mime_type || ycloudMsg.document.contentType, filename: ycloudMsg.document.filename || ycloudMsg.document.fileName, caption: ycloudMsg.document.caption } : undefined,
