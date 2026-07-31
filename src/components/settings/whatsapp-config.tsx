@@ -89,6 +89,36 @@ export function WhatsAppConfig() {
     }
   }, []);
 
+  const handleGenerateQr = useCallback(async () => {
+    setLoadingQr(true);
+    try {
+      const res = await fetch('/api/whatsapp/qr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'generate' }),
+      });
+      if (res.ok) {
+        const payload = await res.json();
+        setQrCodeData(payload.qrCodeData || null);
+        setQrSessionStatus(payload.sessionStatus || 'connecting');
+        toast.success('Código QR generado. Escanéalo con WhatsApp.');
+      } else {
+        toast.error('Error al generar el Código QR.');
+      }
+    } catch (err) {
+      console.error('Error generating QR code:', err);
+      toast.error('Error de red al generar el Código QR.');
+    } finally {
+      setLoadingQr(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (connectionType === 'qr_code') {
+      fetchQrCode();
+    }
+  }, [connectionType, fetchQrCode]);
+
   const handleDisconnectQr = useCallback(async () => {
     setLoadingQr(true);
     try {
@@ -479,16 +509,16 @@ export function WhatsAppConfig() {
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="flex flex-col md:flex-row items-center gap-6 p-4 rounded-lg bg-muted/40 border border-border">
-                <div className="flex flex-col items-center justify-center p-4 bg-white rounded-xl shadow-md border border-slate-200">
+                <div className="flex flex-col items-center justify-center min-w-[240px] min-h-[240px] w-60 h-60 shrink-0 p-4 bg-white rounded-xl shadow-md border border-slate-200">
                   {loadingQr ? (
-                    <div className="flex flex-col items-center justify-center h-56 w-56 text-slate-500 gap-2">
+                    <div className="flex flex-col items-center justify-center h-48 w-48 text-slate-500 gap-2">
                       <Loader2 className="size-8 animate-spin text-primary" />
                       <span className="text-xs">Generando código QR...</span>
                     </div>
                   ) : qrCodeData ? (
-                    <img src={qrCodeData} alt="Código QR WhatsApp" className="h-56 w-56 object-contain" />
+                    <img src={qrCodeData} alt="Código QR WhatsApp" className="h-48 w-48 object-contain" />
                   ) : (
-                    <div className="flex flex-col items-center justify-center h-56 w-56 text-slate-500 gap-2 text-center p-4">
+                    <div className="flex flex-col items-center justify-center h-48 w-48 text-slate-500 gap-2 text-center p-4">
                       <Smartphone className="size-10 text-slate-400" />
                       <span className="text-xs font-medium">Haz clic en Generar QR para vincular</span>
                     </div>
@@ -509,7 +539,7 @@ export function WhatsAppConfig() {
                   </div>
 
                   <div className="flex items-center gap-3 pt-2">
-                    <Button onClick={fetchQrCode} disabled={loadingQr} className="gap-2">
+                    <Button onClick={handleGenerateQr} disabled={loadingQr} className="gap-2">
                       {loadingQr ? <Loader2 className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
                       Generar / Actualizar Código QR
                     </Button>

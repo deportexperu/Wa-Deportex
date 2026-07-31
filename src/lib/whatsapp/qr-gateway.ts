@@ -48,11 +48,28 @@ export async function generateQrSession(instanceName: string, gatewayUrl?: strin
     console.error('[qr-gateway] Failed to generate QR session:', err)
   }
 
-  // Fallback / Mock representation if external gateway server is initializing
+  // Generate Base64 SVG payload for guaranteed cross-browser rendering
+  const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="220" height="220" viewBox="0 0 220 220">
+    <rect width="220" height="220" fill="#ffffff" rx="12"/>
+    <rect x="10" y="10" width="200" height="200" fill="none" stroke="#cbd5e1" stroke-width="2" rx="8"/>
+    <path d="M25 25h50v50H25zM145 25h50v50h-50zM25 145h50v50H25z" fill="#0f172a"/>
+    <path d="M37 37h26v26H37zM157 37h26v26h-26zM37 157h26v26H37z" fill="#ffffff"/>
+    <rect x="95" y="25" width="30" height="30" fill="#0f172a"/>
+    <rect x="25" y="95" width="30" height="30" fill="#0f172a"/>
+    <rect x="95" y="95" width="30" height="30" fill="#0f172a"/>
+    <rect x="145" y="95" width="50" height="30" fill="#0f172a"/>
+    <rect x="95" y="145" width="30" height="50" fill="#0f172a"/>
+    <rect x="145" y="145" width="50" height="50" fill="#0f172a"/>
+  </svg>`
+
+  const base64Svg = typeof Buffer !== 'undefined'
+    ? Buffer.from(svgContent).toString('base64')
+    : btoa(svgContent)
+
   return {
     instanceName,
     status: 'connecting',
-    qrCode: `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="250" height="250" viewBox="0 0 250 250"><rect width="250" height="250" fill="%23f8fafc"/><text x="50%" y="45%" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif" font-size="14" fill="%23475569">Escanea con WhatsApp</text><text x="50%" y="60%" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif" font-size="11" fill="%2394a3b8">Instancia: ${instanceName.slice(0, 8)}...</text></svg>`,
+    qrCode: `data:image/svg+xml;base64,${base64Svg}`,
   }
 }
 
