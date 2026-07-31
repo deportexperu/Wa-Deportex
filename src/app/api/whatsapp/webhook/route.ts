@@ -430,10 +430,10 @@ async function processWebhook(body: any) {
 
       const value = change.value
 
-      // Handle status updates
+      // Handle status updates and auto-capture unpersisted outbound app/web messages
       if (value.statuses) {
         for (const status of value.statuses) {
-          await handleStatusUpdate(status)
+          await handleStatusUpdate(status, value.messages)
         }
       }
 
@@ -613,24 +613,73 @@ function isValidStatusTransition(current: string, incoming: string): boolean {
   return ii > ci
 }
 
-async function handleStatusUpdate(status: {
-  id: string
-  status: string
-  timestamp: string
-  recipient_id: string
-}) {
+async function handleStatusUpdate(
+  status: {
+    id: string
+    status: string
+    timestamp: string
+    recipient_id: string
+  },
+  contextMessages?: WhatsAppMessage[]
+) {
   // 1) Mirror onto messages (legacy behavior) — Meta's status values
   //    already match the CHECK constraint on messages.status. No
   //    `.select()`: message_id is NOT unique (migration 009 — Meta ids
   //    repeat across numbers), so this updates 0..N rows and must not
   //    assume a single row.
-  const { error: msgErr } = await supabaseAdmin()
+  const { data: existingRows, error: msgErr } = await supabaseAdmin()
     .from('messages')
     .update({ status: status.status })
     .eq('message_id', status.id)
+    .select('id')
 
   if (msgErr) {
     console.error('Error updating message status:', msgErr)
+  }
+
+  // If 0 rows matched AND status is sent/delivered/read AND recipient_id is present:
+  // This message was sent from WhatsApp Web / WhatsApp Business Mobile App!
+  // Insert it into messages table so it appears in CRM thread and AI context.
+  if ((!existingRows || existingRows.length === 0) && status.recipient_id && (status.status === 'sent' || status.status === 'delivered' || status.status === 'read')) {
+    try {
+      const recipientPhone = normalizePhone(status.recipient_id)
+      if (recipientPhone) {
+        const { data: config } = await supabaseAdmin()
+          .from('whatsapp_config')
+          .select('*')
+          .limit(1)
+          .maybeSingle()
+
+        if (config) {
+          const displayPhone = (config.phone_number_id || '').replace(/\D/g, '')
+          if (recipientPhone !== displayPhone) {
+            const contextMsg = contextMessages?.find(m => m.id === status.id || m.text?.body)
+            const textBody = contextMsg?.text?.body || contextMsg?.image?.caption || contextMsg?.video?.caption || null
+            const decryptedAccessToken = decrypt(config.access_token)
+
+            await processOutboundAppMessage(
+              {
+                id: status.id,
+                from: displayPhone || 'agent',
+                to: recipientPhone,
+                timestamp: status.timestamp,
+                type: contextMsg?.type || 'text',
+                text: textBody ? { body: textBody } : undefined,
+                image: contextMsg?.image,
+                video: contextMsg?.video,
+                document: contextMsg?.document,
+              },
+              { profile: { name: '' }, wa_id: recipientPhone },
+              config.account_id,
+              config.user_id,
+              decryptedAccessToken
+            )
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[webhook] Auto-capture outbound message from status failed:', err)
+    }
   }
 
   // Webhook fan-out for this status change happens at the END of this
