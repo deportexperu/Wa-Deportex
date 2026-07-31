@@ -268,38 +268,61 @@ async function processWebhook(body: any) {
 
     if (config) {
       const fromPhone = ycloudMsg.from || ycloudMsg.customer?.phone_number || ycloudMsg.sender || ''
-      const toPhone = ycloudMsg.to || ycloudMsg.recipient || ycloudMsg.customer?.phone_number || ''
-      
+      const toPhone =
+        ycloudMsg.to ||
+        ycloudMsg.recipient ||
+        ycloudMsg.recipient_id ||
+        ycloudMsg.destination ||
+        ycloudMsg.customer?.phone_number ||
+        ycloudMsg.customer?.phone ||
+        ycloudMsg.customer?.wa_id ||
+        ycloudMsg.receiver ||
+        body.to ||
+        ''
+
       const cleanFrom = normalizePhone(fromPhone)
       const cleanTo = normalizePhone(toPhone)
       const displayPhone = (config.phone_number_id || '').replace(/\D/g, '')
+      const wabaPhone = (config.waba_id || '').replace(/\D/g, '')
 
-      // Explicitly detect YCloud outbound event types:
-      //   - whatsapp.outbound_message.sent (sent from business via API or WhatsApp Web/App)
-      //   - whatsapp.message.updated with status = 'sent'/'delivered'/'read' (status events — skip these)
-      const isStatusUpdateOnly = Boolean(
-        body.type === 'whatsapp.message.updated' &&
-        (ycloudMsg.status === 'sent' || ycloudMsg.status === 'delivered' || ycloudMsg.status === 'read' || ycloudMsg.status === 'failed') &&
-        !ycloudMsg.text?.body && !ycloudMsg.image && !ycloudMsg.video && !ycloudMsg.document && !ycloudMsg.audio
+      // Determine if payload contains actual message content (text or media)
+      const hasMessageContent = Boolean(
+        (typeof ycloudMsg.text === 'string' && ycloudMsg.text.trim()) ||
+        (typeof ycloudMsg.text === 'object' && ycloudMsg.text?.body?.trim()) ||
+        (typeof ycloudMsg.body === 'string' && ycloudMsg.body.trim()) ||
+        ycloudMsg.image ||
+        ycloudMsg.video ||
+        ycloudMsg.document ||
+        ycloudMsg.audio ||
+        ycloudMsg.sticker ||
+        ycloudMsg.location ||
+        ycloudMsg.interactive ||
+        ycloudMsg.template ||
+        ycloudMsg.templateName ||
+        ycloudMsg.caption
       )
 
-      if (isStatusUpdateOnly) {
-        console.log('[webhook] YCloud status update event (skipping as message):', body.type, ycloudMsg.status)
+      // Only skip as a pure status update if there is ZERO message content
+      if (!hasMessageContent && (ycloudMsg.status === 'sent' || ycloudMsg.status === 'delivered' || ycloudMsg.status === 'read' || ycloudMsg.status === 'failed')) {
+        console.log('[webhook] YCloud pure status update event (skipping message insert):', body.type, ycloudMsg.status)
         return
       }
 
       const isOutbound =
-        Boolean(body.type === 'whatsapp.outbound_message.sent') ||
-        Boolean(body.type?.includes('outbound') || body.type?.includes('sent')) ||
-        Boolean(cleanFrom && displayPhone && (cleanFrom === displayPhone || cleanFrom.endsWith(displayPhone) || displayPhone.endsWith(cleanFrom)))
+        Boolean(body.type?.includes('outbound')) ||
+        Boolean(
+          cleanFrom && (
+            (displayPhone && (cleanFrom === displayPhone || cleanFrom.endsWith(displayPhone) || displayPhone.endsWith(cleanFrom))) ||
+            (wabaPhone && (cleanFrom === wabaPhone || cleanFrom.endsWith(wabaPhone) || wabaPhone.endsWith(cleanFrom)))
+          )
+        )
 
-      console.log('[webhook] YCloud event:', body.type, '| from:', cleanFrom, '| to:', cleanTo, '| displayPhone:', displayPhone, '| isOutbound:', isOutbound)
+      console.log('[webhook] YCloud event:', body.type, '| from:', cleanFrom, '| to:', cleanTo, '| displayPhone:', displayPhone, '| isOutbound:', isOutbound, '| hasContent:', hasMessageContent)
 
       const mediaObj = ycloudMsg.image || ycloudMsg.video || ycloudMsg.document || ycloudMsg.audio || ycloudMsg.sticker
       const mediaIdOrUrl = mediaObj?.url || mediaObj?.link || mediaObj?.fileUrl || mediaObj?.id || null
 
       // YCloud sends template messages as type='unsupported' — remap to 'template'
-      // so the CRM can render them correctly with the template badge
       let msgType = ycloudMsg.type || (ycloudMsg.image ? 'image' : ycloudMsg.video ? 'video' : ycloudMsg.audio ? 'audio' : ycloudMsg.document ? 'document' : 'text')
       if (msgType === 'unsupported' || msgType === 'unknown') {
         if (ycloudMsg.template || ycloudMsg.templateName || ycloudMsg.template_name) {
@@ -350,7 +373,7 @@ async function processWebhook(body: any) {
       if (isOutbound && cleanTo) {
         await processOutboundAppMessage(
           message,
-          { profile: { name: '' }, wa_id: cleanTo },
+          { profile: { name: ycloudMsg.customer?.name || ycloudMsg.recipientName || '' }, wa_id: cleanTo },
           config.account_id,
           config.user_id,
           decryptedAccessToken
