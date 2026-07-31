@@ -336,13 +336,18 @@ async function processWebhook(body: any) {
       const mediaObj = ycloudMsg.image || ycloudMsg.video || ycloudMsg.document || ycloudMsg.audio || ycloudMsg.sticker
       const mediaIdOrUrl = mediaObj?.url || mediaObj?.link || mediaObj?.fileUrl || mediaObj?.id || null
 
-      let msgType = ycloudMsg.type || (ycloudMsg.image ? 'image' : ycloudMsg.video ? 'video' : ycloudMsg.audio ? 'audio' : ycloudMsg.document ? 'document' : 'text')
-      if (msgType === 'unsupported' || msgType === 'unknown') {
-        if (ycloudMsg.template || ycloudMsg.templateName || ycloudMsg.template_name) {
-          msgType = 'template'
-        } else {
-          msgType = 'text'
-        }
+      // Extract actual message content type (do NOT use event types like whatsapp.inbound_message.received)
+      let msgType = 'text'
+      if (ycloudMsg.image) msgType = 'image'
+      else if (ycloudMsg.video) msgType = 'video'
+      else if (ycloudMsg.document) msgType = 'document'
+      else if (ycloudMsg.audio) msgType = 'audio'
+      else if (ycloudMsg.sticker) msgType = 'sticker'
+      else if (ycloudMsg.location) msgType = 'location'
+      else if (ycloudMsg.interactive) msgType = 'interactive'
+      else if (ycloudMsg.template || ycloudMsg.templateName || ycloudMsg.template_name) msgType = 'template'
+      else if (ycloudMsg.type && !ycloudMsg.type.startsWith('whatsapp.') && ycloudMsg.type !== 'unsupported' && ycloudMsg.type !== 'unknown') {
+        msgType = ycloudMsg.type
       }
 
       const templateBodyText = (ycloudMsg.template || ycloudMsg.templateName)
