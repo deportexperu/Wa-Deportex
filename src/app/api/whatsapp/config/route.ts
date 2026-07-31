@@ -235,12 +235,29 @@ export async function POST(request: Request) {
       )
     }
 
+    let actualAccessToken = access_token
+    if (access_token === '••••••••••••••••' || access_token.includes('••••')) {
+      const { data: existingConfig } = await supabaseAdmin()
+        .from('whatsapp_config')
+        .select('access_token')
+        .eq('account_id', accountId)
+        .maybeSingle()
+
+      if (existingConfig?.access_token) {
+        try {
+          actualAccessToken = decrypt(existingConfig.access_token)
+        } catch {
+          actualAccessToken = existingConfig.access_token
+        }
+      }
+    }
+
     // Verify credentials with Meta BEFORE saving
     let phoneInfo
     try {
       phoneInfo = await verifyPhoneNumber({
         phoneNumberId: phone_number_id,
-        accessToken: access_token,
+        accessToken: actualAccessToken,
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown Meta API error'
@@ -255,7 +272,7 @@ export async function POST(request: Request) {
     let encryptedAccessToken: string
     let encryptedVerifyToken: string | null
     try {
-      encryptedAccessToken = encrypt(access_token)
+      encryptedAccessToken = encrypt(actualAccessToken)
       encryptedVerifyToken = verify_token ? encrypt(verify_token) : null
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown encryption error'
