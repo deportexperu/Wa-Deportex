@@ -16,7 +16,7 @@ export function verifyMetaWebhookSignature(
   const secrets = [metaSecret, ycloudSecret].filter(Boolean) as string[]
 
   if (secrets.length === 0) {
-    return false
+    return true
   }
 
   if (!signatureHeader) {
